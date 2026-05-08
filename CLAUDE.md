@@ -175,3 +175,4 @@ python-dotenv==1.0.1
 - Logs em stdout (Cloud Run captura automaticamente)
 - Um arquivo por serviço (producer/app.py, consumer/app.py) — sem módulos extras
 - Credenciais via ADC local / Workload Identity no Cloud Run
+- **Repositório público:** sempre adicionar ao `.gitignore` qualquer arquivo que exponha credenciais ou acesso (`.env`, service account keys, `*.json` de credenciais, etc.)
