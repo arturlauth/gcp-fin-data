@@ -9,6 +9,7 @@ ignore/
 # Terraform
 **/.terraform/
 *.tfstate
+*.tfstate.*
 *.tfstate.backup
-.terraform.lock.hcl
 terraform.tfvars
+*.zip

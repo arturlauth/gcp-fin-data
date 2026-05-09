@@ -4,6 +4,10 @@ terraform {
       source  = "hashicorp/google"
       version = "~> 5.0"
     }
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.0"
+    }
   }
 }
 
@@ -12,25 +16,11 @@ provider "google" {
   region  = var.region
 }
 
-# ── Pub/Sub ───────────────────────────────────────────────────────────────────
+# ── GCS (Landing) ─────────────────────────────────────────────────────────────
 
-resource "google_pubsub_topic" "btcbrl_trades" {
-  name = "btcbrl-trades"
-}
-
-resource "google_pubsub_subscription" "btcbrl_trades_sub" {
-  name  = "btcbrl-trades-sub"
-  topic = google_pubsub_topic.btcbrl_trades.id
-
-  ack_deadline_seconds       = 60
-  message_retention_duration = "86400s"
-}
-
-# ── GCS ───────────────────────────────────────────────────────────────────────
-
-resource "google_storage_bucket" "raw" {
+resource "google_storage_bucket" "landing" {
   name                        = var.gcs_bucket_name
-  location                    = var.region
+  location                    = "US"
   force_destroy               = false
   uniform_bucket_level_access = true
 
@@ -42,6 +32,11 @@ resource "google_storage_bucket" "raw" {
 
 # ── BigQuery ──────────────────────────────────────────────────────────────────
 
+resource "google_bigquery_dataset" "raw" {
+  dataset_id = "raw"
+  location   = "US"
+}
+
 resource "google_bigquery_dataset" "trusted" {
   dataset_id = "trusted"
   location   = "US"
@@ -52,73 +47,86 @@ resource "google_bigquery_dataset" "refined" {
   location   = "US"
 }
 
-resource "google_bigquery_table" "trusted_binance_btc_trades" {
+resource "google_bigquery_table" "raw_btcbrl_trades" {
+  dataset_id          = google_bigquery_dataset.raw.dataset_id
+  table_id            = "btcbrl_trades"
+  deletion_protection = false
+
+  time_partitioning {
+    type          = "DAY"
+    field         = "_load_date"
+    expiration_ms = 7776000000 # 90 days — matches GCS lifecycle
+  }
+
+  schema = jsonencode([
+    { name = "payload",      type = "STRING"    },
+    { name = "_source_file", type = "STRING"    },
+    { name = "_ingested_at", type = "TIMESTAMP" },
+    { name = "_load_date",   type = "DATE"      },
+  ])
+}
+
+resource "google_bigquery_table" "trusted_btcbrl_trades" {
   dataset_id          = google_bigquery_dataset.trusted.dataset_id
   table_id            = "binance_btc_trades"
   deletion_protection = false
 
+  time_partitioning {
+    type  = "DAY"
+    field = "trade_time"
+  }
+
   schema = jsonencode([
     { name = "trade_id",       type = "INTEGER",   mode = "REQUIRED" },
-    { name = "event_type",     type = "STRING"    },
-    { name = "event_time",     type = "TIMESTAMP" },
-    { name = "symbol",         type = "STRING"    },
-    { name = "price",          type = "NUMERIC"   },
-    { name = "quantity",       type = "NUMERIC"   },
-    { name = "trade_time",     type = "TIMESTAMP" },
-    { name = "is_buyer_maker", type = "BOOLEAN"   },
-    { name = "_file_source",   type = "STRING"    },
-    { name = "_insert_date",   type = "TIMESTAMP" },
-    { name = "_job",           type = "STRING"    },
+    { name = "event_type",     type = "STRING"                       },
+    { name = "event_time",     type = "TIMESTAMP"                    },
+    { name = "symbol",         type = "STRING"                       },
+    { name = "price",          type = "NUMERIC"                      },
+    { name = "quantity",       type = "NUMERIC"                      },
+    { name = "trade_time",     type = "TIMESTAMP"                    },
+    { name = "is_buyer_maker", type = "BOOLEAN"                      },
+    { name = "_insert_date",   type = "TIMESTAMP"                    },
   ])
 }
 
 # ── Artifact Registry ─────────────────────────────────────────────────────────
 
 resource "google_artifact_registry_repository" "cloud_run" {
-  location      = var.region
+  location      = "us-central1"
   repository_id = "cloud-run"
   format        = "DOCKER"
 }
 
 # ── Service Accounts ──────────────────────────────────────────────────────────
 
-resource "google_service_account" "producer" {
-  account_id   = "sa-producer"
-  display_name = "Cloud Run Producer"
-}
-
-resource "google_service_account" "consumer" {
-  account_id   = "sa-consumer"
-  display_name = "Cloud Run Consumer"
+resource "google_service_account" "streamer" {
+  account_id   = "sa-streamer"
+  display_name = "Streamer VM"
 }
 
 resource "google_service_account" "pipeline" {
   account_id   = "sa-pipeline"
-  display_name = "Cloud Run Pipeline Jobs"
+  display_name = "Pipeline Jobs"
 }
 
-resource "google_pubsub_topic_iam_member" "producer_publisher" {
-  topic  = google_pubsub_topic.btcbrl_trades.name
-  role   = "roles/pubsub.publisher"
-  member = "serviceAccount:${google_service_account.producer.email}"
-}
+# ── IAM ───────────────────────────────────────────────────────────────────────
 
-resource "google_pubsub_subscription_iam_member" "consumer_subscriber" {
-  subscription = google_pubsub_subscription.btcbrl_trades_sub.name
-  role         = "roles/pubsub.subscriber"
-  member       = "serviceAccount:${google_service_account.consumer.email}"
-}
-
-resource "google_storage_bucket_iam_member" "consumer_raw_writer" {
-  bucket = google_storage_bucket.raw.name
+resource "google_storage_bucket_iam_member" "streamer_landing_writer" {
+  bucket = google_storage_bucket.landing.name
   role   = "roles/storage.objectAdmin"
-  member = "serviceAccount:${google_service_account.consumer.email}"
+  member = "serviceAccount:${google_service_account.streamer.email}"
 }
 
-resource "google_storage_bucket_iam_member" "pipeline_raw_reader" {
-  bucket = google_storage_bucket.raw.name
+resource "google_storage_bucket_iam_member" "pipeline_landing_reader" {
+  bucket = google_storage_bucket.landing.name
   role   = "roles/storage.objectViewer"
   member = "serviceAccount:${google_service_account.pipeline.email}"
+}
+
+resource "google_bigquery_dataset_iam_member" "pipeline_raw_editor" {
+  dataset_id = google_bigquery_dataset.raw.dataset_id
+  role       = "roles/bigquery.dataEditor"
+  member     = "serviceAccount:${google_service_account.pipeline.email}"
 }
 
 resource "google_bigquery_dataset_iam_member" "pipeline_trusted_editor" {
@@ -133,90 +141,161 @@ resource "google_project_iam_member" "pipeline_bq_job_user" {
   member  = "serviceAccount:${google_service_account.pipeline.email}"
 }
 
-# ── Cloud Run ─────────────────────────────────────────────────────────────────
+resource "google_cloudfunctions2_function_iam_member" "pipeline_cf_invoker" {
+  project        = var.project_id
+  location       = var.region
+  cloud_function = google_cloudfunctions2_function.landing_to_raw.name
+  role           = "roles/cloudfunctions.invoker"
+  member         = "serviceAccount:${google_service_account.pipeline.email}"
+}
 
-resource "google_cloud_run_v2_service" "producer" {
-  name     = "producer"
+# ── Streamer VM ───────────────────────────────────────────────────────────────
+
+resource "google_storage_bucket_object" "streamer_app" {
+  name   = "streamer-source/app.py"
+  bucket = google_storage_bucket.landing.name
+  source = "${path.module}/../../jobs/0_landing/vm_binance_btcbrl/app.py"
+}
+
+resource "google_storage_bucket_object" "streamer_requirements" {
+  name   = "streamer-source/requirements.txt"
+  bucket = google_storage_bucket.landing.name
+  source = "${path.module}/../../jobs/0_landing/vm_binance_btcbrl/requirements.txt"
+}
+
+resource "google_compute_instance" "streamer" {
+  name         = "streamer"
+  machine_type = "e2-micro"
+  zone         = "${var.region}-a"
+
+  boot_disk {
+    initialize_params {
+      image = "debian-cloud/debian-12"
+      size  = 10
+    }
+  }
+
+  network_interface {
+    network = "default"
+    access_config {}
+  }
+
+  service_account {
+    email  = google_service_account.streamer.email
+    scopes = ["cloud-platform"]
+  }
+
+  metadata_startup_script = templatefile("${path.module}/streamer_startup.sh.tpl", {
+    project_id      = var.project_id
+    gcs_bucket      = google_storage_bucket.landing.name
+    binance_streams = var.binance_streams
+  })
+
+  depends_on = [
+    google_storage_bucket_object.streamer_app,
+    google_storage_bucket_object.streamer_requirements,
+  ]
+}
+
+# ── Cloud Function: landing → raw ─────────────────────────────────────────────
+
+data "archive_file" "landing_to_raw" {
+  type        = "zip"
+  source_dir  = "${path.module}/../../jobs/1_raw/cf_binance_btcbrl"
+  output_path = "${path.module}/landing_to_raw.zip"
+}
+
+resource "google_storage_bucket_object" "landing_to_raw_source" {
+  name   = "cf-source/landing-to-raw-${data.archive_file.landing_to_raw.output_md5}.zip"
+  bucket = google_storage_bucket.landing.name
+  source = data.archive_file.landing_to_raw.output_path
+}
+
+resource "google_cloudfunctions2_function" "landing_to_raw" {
+  name     = "landing-to-raw"
   location = var.region
 
-  template {
-    service_account = google_service_account.producer.email
-
-    containers {
-      image = var.producer_image
-
-      env {
-        name  = "GCP_PROJECT_ID"
-        value = var.project_id
+  build_config {
+    runtime     = "python311"
+    entry_point = "binance_btcbrl"
+    environment_variables = {
+      GOOGLE_FUNCTION_SOURCE = "binance_btcbrl.py"
+    }
+    source {
+      storage_source {
+        bucket = google_storage_bucket.landing.name
+        object = google_storage_bucket_object.landing_to_raw_source.name
       }
-      env {
-        name  = "PUBSUB_TOPIC_ID"
-        value = google_pubsub_topic.btcbrl_trades.name
-      }
+    }
+  }
+
+  service_config {
+    service_account_email = google_service_account.pipeline.email
+    timeout_seconds       = 540
+    environment_variables = {
+      GCP_PROJECT_ID     = var.project_id
+      GCS_BUCKET         = google_storage_bucket.landing.name
+      GCS_LANDING_PREFIX = "landing/binance/btcbrl_trades"
     }
   }
 }
 
-resource "google_cloud_run_v2_service" "consumer" {
-  name     = "consumer"
-  location = var.region
+resource "google_cloud_scheduler_job" "landing_to_raw_daily" {
+  name      = "landing-to-raw-daily"
+  region    = var.region
+  schedule  = "0 2 * * *" # 02:00 UTC — after midnight, full previous day available
+  time_zone = "UTC"
 
-  template {
-    service_account = google_service_account.consumer.email
-
-    containers {
-      image = var.consumer_image
-
-      env {
-        name  = "GCP_PROJECT_ID"
-        value = var.project_id
-      }
-      env {
-        name  = "PUBSUB_SUBSCRIPTION_ID"
-        value = google_pubsub_subscription.btcbrl_trades_sub.name
-      }
-      env {
-        name  = "GCS_BUCKET"
-        value = google_storage_bucket.raw.name
-      }
-      env {
-        name  = "GCS_RAW_PREFIX"
-        value = "btcbrl/raw"
-      }
+  http_target {
+    uri         = google_cloudfunctions2_function.landing_to_raw.service_config[0].uri
+    http_method = "POST"
+    oidc_token {
+      service_account_email = google_service_account.pipeline.email
     }
   }
 }
 
-resource "google_cloud_run_v2_job" "btcbrl_raw_trusted" {
-  name     = "btcbrl-raw-trusted"
-  location = var.region
+# ── BigQuery Scheduled Query: raw → trusted ───────────────────────────────────
 
-  template {
-    template {
-      service_account = google_service_account.pipeline.email
+# DTS service agent needs to impersonate sa-pipeline to run the scheduled query
+resource "google_service_account_iam_member" "dts_token_creator" {
+  service_account_id = google_service_account.pipeline.name
+  role               = "roles/iam.serviceAccountTokenCreator"
+  member             = "serviceAccount:service-${var.project_number}@gcp-sa-bigquerydatatransfer.iam.gserviceaccount.com"
+}
 
-      containers {
-        image   = var.pipeline_image
-        command = ["python"]
-        args    = ["btcbrl_raw_trusted.py"]
+resource "google_bigquery_data_transfer_config" "raw_to_trusted" {
+  display_name           = "raw-to-trusted-btcbrl"
+  location               = "US"
+  data_source_id         = "scheduled_query"
+  schedule               = "every 24 hours"
+  destination_dataset_id = google_bigquery_dataset.trusted.dataset_id
+  service_account_name   = google_service_account.pipeline.email
 
-        env {
-          name  = "GCP_PROJECT_ID"
-          value = var.project_id
-        }
-        env {
-          name  = "GCS_BUCKET"
-          value = google_storage_bucket.raw.name
-        }
-        env {
-          name  = "BIGQUERY_DATASET_ID"
-          value = google_bigquery_dataset.trusted.dataset_id
-        }
-        env {
-          name  = "BIGQUERY_TABLE_ID"
-          value = google_bigquery_table.trusted_binance_btc_trades.table_id
-        }
-      }
-    }
+  params = {
+    query = <<-SQL
+      MERGE `${var.project_id}.trusted.binance_btc_trades` T
+      USING (
+        SELECT
+          CAST(JSON_VALUE(payload, '$.t') AS INTEGER)                 AS trade_id,
+          JSON_VALUE(payload, '$.e')                                  AS event_type,
+          TIMESTAMP_MILLIS(CAST(JSON_VALUE(payload, '$.E') AS INT64)) AS event_time,
+          JSON_VALUE(payload, '$.s')                                  AS symbol,
+          CAST(JSON_VALUE(payload, '$.p') AS NUMERIC)                 AS price,
+          CAST(JSON_VALUE(payload, '$.q') AS NUMERIC)                 AS quantity,
+          TIMESTAMP_MILLIS(CAST(JSON_VALUE(payload, '$.T') AS INT64)) AS trade_time,
+          CAST(JSON_VALUE(payload, '$.m') AS BOOL)                    AS is_buyer_maker,
+          CURRENT_TIMESTAMP()                                         AS _insert_date
+        FROM (
+          SELECT *, ROW_NUMBER() OVER (PARTITION BY JSON_VALUE(payload, '$.t') ORDER BY JSON_VALUE(payload, '$.E') DESC) AS rn
+          FROM `${var.project_id}.raw.btcbrl_trades`
+          WHERE _load_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY)
+        )
+        WHERE rn = 1
+      ) S ON T.trade_id = S.trade_id
+      WHEN NOT MATCHED THEN
+        INSERT (trade_id, event_type, event_time, symbol, price, quantity, trade_time, is_buyer_maker, _insert_date)
+        VALUES (S.trade_id, S.event_type, S.event_time, S.symbol, S.price, S.quantity, S.trade_time, S.is_buyer_maker, S._insert_date)
+    SQL
   }
 }

@@ -3,6 +3,11 @@ variable "project_id" {
   type        = string
 }
 
+variable "project_number" {
+  description = "GCP project number (used for DTS service agent IAM binding)"
+  type        = string
+}
+
 variable "region" {
   description = "GCP region for all resources"
   type        = string
@@ -15,21 +20,12 @@ variable "environment" {
 }
 
 variable "gcs_bucket_name" {
-  description = "GCS bucket name for raw trade data"
+  description = "GCS bucket name for the data lake"
   type        = string
 }
 
-variable "producer_image" {
-  description = "Docker image URI for the producer Cloud Run service"
+variable "binance_streams" {
+  description = "Comma-separated Binance stream names, e.g. btcbrl@trade,btcusdt@trade"
   type        = string
-}
-
-variable "consumer_image" {
-  description = "Docker image URI for the consumer Cloud Run service"
-  type        = string
-}
-
-variable "pipeline_image" {
-  description = "Docker image URI for the pipelines Cloud Run job"
-  type        = string
+  default     = "btcbrl@trade"
 }

@@ -2,7 +2,7 @@
 
 ## Objetivo
 Pipeline de streaming de dados financeiros em tempo real:
-Binance WebSocket → Cloud Run Producer → Pub/Sub → Cloud Run Consumer → GCS (Raw) → ETL → BigQuery (Trusted)
+Binance WebSocket → Streamer VM → GCS (Landing) → Cloud Function → BigQuery Raw → Scheduled Query → BigQuery Trusted
 
 ## Projeto GCP
 - **Project ID dev:** `gcp-fin-data`
@@ -13,38 +13,39 @@ Binance WebSocket → Cloud Run Producer → Pub/Sub → Cloud Run Consumer → 
 ## Arquitetura Medallion
 
 ```
-Binance WebSocket
+Binance WebSocket (combined stream endpoint)
       ↓
-cloud-run/producer/app.py  (Cloud Run Service)
+jobs/0_landing/vm_binance_btcbrl/app.py  (GCE e2-micro VM — systemd service)
       ↓
-Pub/Sub Topic: btcbrl-trades
+GCS Landing: gs://us-gs-datalake/landing/binance/{symbol}_trades/year=YYYY/month=MM/day=DD/hour=HH/trades_<epoch_ms>.jsonl
       ↓
-cloud-run/consumer/app.py  (Cloud Run Service)
+jobs/1_raw/cf_binance_btcbrl/  (Cloud Function 2nd gen — daily, 2-day lookback)
       ↓
-GCS (Raw)
-btcbrl/raw/YYYY/MM/DD/HH/trades_<ts>.jsonl
+BigQuery Raw — raw.btcbrl_trades
+payload STRING + metadata columns, partitioned by _load_date (90-day expiry)
       ↓
-cloud-run/pipelines/btcbrl_raw_trusted.py  (Cloud Run Job — hourly)
+BigQuery Scheduled Query — raw → trusted (daily MERGE, dedup on trade_id)
       ↓
-BigQuery (Trusted)
-trusted.binance_btc_trades
+BigQuery Trusted — trusted.binance_btc_trades
+typed, partitioned by DATE(trade_time)
       ↓
-BigQuery Views (Refined) — futuro
+dbt (Refined) — futuro
 ```
 
 ### Camadas
-| Camada | Tecnologia | Recurso GCP |
+| Camada | Tecnologia | Recurso |
 |---|---|---|
-| Raw | GCS | `gs://<bucket>/btcbrl/raw/YYYY/MM/DD/HH/` |
-| Trusted | BigQuery | `trusted.binance_btc_trades` |
-| Refined | BigQuery Views | `refined.*` (futuro) |
+| Landing | GCS JSONL | `gs://us-gs-datalake/landing/binance/{symbol}_trades/year=YYYY/month=MM/day=DD/hour=HH/` |
+| Raw | BigQuery (append-only) | `raw.btcbrl_trades` |
+| Trusted | BigQuery (typed, partitioned) | `trusted.binance_btc_trades` |
+| Refined | dbt | `refined.*` (futuro) |
 
 ### Responsabilidades por componente
 | Componente | Faz | Não faz |
 |---|---|---|
-| Producer | Binance WS → Pub/Sub | nenhuma transformação |
-| Consumer | Pub/Sub → GCS raw (JSONL) | nenhuma transformação, não escreve no BQ |
-| ETL Pipeline | GCS raw → BigQuery Trusted (MERGE) | não acessa Pub/Sub |
+| streamer | Binance WS → GCS landing (JSONL, buffer por símbolo) | nenhuma transformação |
+| landing_to_raw | GCS landing → BQ raw (BQ Load Job) | nenhuma transformação, só append |
+| raw_to_trusted | BQ raw → BQ trusted (MERGE + cast + dedup) | não acessa GCS |
 
 ---
 
@@ -52,170 +53,193 @@ BigQuery Views (Refined) — futuro
 
 | Recurso | Nome (dev) | Status |
 |---|---|---|
-| Pub/Sub Topic | `btcbrl-trades` | ✓ criado |
-| Pub/Sub Subscription | `btcbrl-trades-sub` | ✓ criado |
-| GCS Bucket | `gcp-fin-data-bucket-dev` | ✓ criado |
-| Artifact Registry | `cloud-run` | ⬜ criar via Terraform |
-| BigQuery Dataset | `trusted` | ✓ criado (schema a atualizar) |
-| BigQuery Dataset | `refined` | ✓ criado |
-| BigQuery Table | `trusted.binance_btc_trades` | ⬜ recriar com schema atualizado |
-| Cloud Run Service | `producer` | ⬜ deploy após Docker |
-| Cloud Run Service | `consumer` | ⬜ deploy após Docker |
-| Cloud Run Job | `btcbrl-raw-trusted` | ⬜ deploy após Docker |
+| GCS Bucket (landing) | `us-gs-datalake` | ✓ |
+| Artifact Registry | `cloud-run` (us-central1) | ✓ |
+| BigQuery Dataset | `raw` | ✓ |
+| BigQuery Dataset | `trusted` | ✓ |
+| BigQuery Dataset | `refined` | ✓ |
+| BigQuery Table | `raw.btcbrl_trades` | ✓ partitioned by _load_date |
+| BigQuery Table | `trusted.binance_btc_trades` | ✓ partitioned by trade_time |
+| Cloud Function 2nd gen | `landing-to-raw` | ✓ |
+| Cloud Scheduler | `landing-to-raw-daily` | ✓ 02:00 UTC |
+| BQ Scheduled Query | `raw-to-trusted-btcbrl` | ✓ daily MERGE |
+| GCE VM | `streamer` (e2-micro, southamerica-east1-a) | ✓ systemd |
+| Service Account | `sa-streamer` | ✓ storage.objectAdmin on landing |
+| Service Account | `sa-pipeline` | ✓ BQ dataEditor + jobUser + CF invoker |
 
-### Schema: trusted.binance_btc_trades
+---
+
+## Schemas
+
+### raw.btcbrl_trades (partitioned by _load_date, 90-day expiry)
+
+| Campo | Tipo | Nota |
+|---|---|---|
+| payload | STRING | Binance JSON verbatim |
+| _source_file | STRING | GCS blob path — rastreabilidade |
+| _ingested_at | TIMESTAMP | Quando a CF rodou |
+| _load_date | DATE | Data da carga — campo de partição |
+
+### trusted.binance_btc_trades (partitioned by DATE(trade_time))
 | Campo | Tipo | Nota |
 |---|---|---|
 | trade_id | INTEGER REQUIRED | PK — chave do MERGE |
 | event_type | STRING | |
-| event_time | TIMESTAMP | ms → TIMESTAMP |
+| event_time | TIMESTAMP | TIMESTAMP_MILLIS(E) |
 | symbol | STRING | |
-| price | NUMERIC | string → NUMERIC (sem perda de precisão) |
-| quantity | NUMERIC | string → NUMERIC |
-| trade_time | TIMESTAMP | ms → TIMESTAMP |
-| is_buyer_maker | BOOLEAN | |
-| _file_source | STRING | URI GCS de origem |
-| _insert_date | TIMESTAMP | timestamp de execução do ETL |
-| _job | STRING | nome do job |
+| price | NUMERIC | CAST(p AS NUMERIC) |
+| quantity | NUMERIC | CAST(q AS NUMERIC) |
+| trade_time | TIMESTAMP | TIMESTAMP_MILLIS(T) — campo de partição |
+| is_buyer_maker | BOOLEAN | CAST(m AS BOOL) |
+| _insert_date | TIMESTAMP | CURRENT_TIMESTAMP() na execução do scheduled query |
 
 ---
 
 ## Binance WebSocket
 
-**URL:** `wss://stream.binance.com:9443/ws/btcbrl@trade`
+**URL (combined stream):** `wss://stream.binance.com:9443/stream?streams=btcbrl@trade/btcusdt@trade/...`
 
 **Payload raw:**
 ```json
 {
-  "e": "trade",
-  "E": 1672515782136,
-  "s": "BTCBRL",
-  "t": 12345,
-  "p": "394285.00",
-  "q": "0.001",
-  "T": 1672515782136,
-  "m": true,
-  "M": true
+  "e": "trade", "E": 1672515782136, "s": "BTCBRL",
+  "t": 12345, "p": "394285.00", "q": "0.001",
+  "T": 1672515782136, "m": true, "M": true
 }
 ```
 - Timestamps em milissegundos
 - `t` é o trade_id único (chave de negócio para MERGE)
 - `M` sempre `true` — ignorar
-- Conexões válidas por 24h → producer precisa de reconnect automático
+- Combined stream: um único WebSocket para N símbolos; envelope `{"stream": "btcbrl@trade", "data": {...}}`
+- Streamer faz reconnect automático em caso de queda
 
 ---
 
 ## Stack
 
-- Python 3.11, asyncio, websockets
-- google-cloud-pubsub, google-cloud-bigquery, google-cloud-storage
+- Python 3.11, asyncio, websockets, functions-framework
+- google-cloud-storage, google-cloud-bigquery
 - python-dotenv (dev local)
-- Docker, Cloud Run
 - Terraform (infra)
+- dbt (futuro — Refined layer)
 
 ---
 
 ## Estrutura do projeto
 
 ```
-data-streaming-bigquery/          ← renomear para gcp-fin-data
-├── cloud-run/
-│   ├── producer/
-│   │   ├── app.py                ✓ implementado e testado
-│   │   ├── requirements.txt      ✓
-│   │   └── Dockerfile            ✓
-│   ├── consumer/
-│   │   ├── app.py                ✓ implementado e testado (GCS only)
-│   │   ├── requirements.txt      ✓
-│   │   └── Dockerfile            ✓
-│   └── pipelines/
-│       ├── btcbrl_raw_trusted.py ✓ ETL raw → trusted (MERGE)
-│       ├── requirements.txt      ✓
-│       └── Dockerfile            ✓ (imagem compartilhada por todos os pipelines)
+data-streaming-bigquery/
+├── jobs/
+│   ├── 0_landing/
+│   │   ├── vm_binance_btcbrl/       ✓ GCE VM: Binance WS → GCS landing
+│   │   │   ├── app.py
+│   │   │   └── requirements.txt
+│   │   └── cf_tesouro_leiloes/      ✓ Cloud Function: Tesouro API → GCS landing
+│   │       ├── tesouro_leiloes.py
+│   │       └── requirements.txt
+│   ├── 1_raw/
+│   │   └── cf_binance_btcbrl/       ✓ Cloud Function: GCS landing → BQ raw
+│   │       ├── binance_btcbrl.py
+│   │       └── requirements.txt
+│   ├── 2_trusted/
+│   │   └── bq_binance_btcbrl/       ✓ BQ Scheduled Query: BQ raw → BQ trusted
+│   │       └── binance_btcbrl.sql   (referência — SQL inline no Terraform)
+│   └── 3_refined/                   ⬜ futuro (dbt)
+├── dbt/
+│   ├── models/
+│   │   ├── trusted/                 ⬜ futuro
+│   │   └── refined/                 ⬜ futuro
+│   └── dbt_project.yml
 ├── infra/
 │   └── terraform/
-│       ├── main.tf               ✓
-│       ├── variables.tf          ✓
-│       ├── outputs.tf            ✓
+│       ├── main.tf                  ✓
+│       ├── variables.tf             ✓
+│       ├── outputs.tf               ✓
+│       ├── streamer_startup.sh.tpl  ✓
 │       └── environments/
-│           ├── dev.tfvars        ✓
-│           └── prod.tfvars       ✓
+│           ├── dev.tfvars           ✓
+│           └── prod.tfvars
+├── docs/
+│   └── technical_document.md
 ├── CLAUDE.md
-├── .env.dev                      (não commitar)
-└── .gitignore                    ✓
-```
-
-> **Nota:** O diretório raiz deve ser renomeado para `gcp-fin-data` para alinhar com o Project ID GCP.
-
----
-
-## Variáveis de ambiente (.env.dev)
-
-```
-GCP_PROJECT_ID=gcp-fin-data
-PUBSUB_TOPIC_ID=btcbrl-trades
-PUBSUB_SUBSCRIPTION_ID=btcbrl-trades-sub
-GCS_BUCKET=gcp-fin-data-bucket-dev
-GCS_RAW_PREFIX=btcbrl/raw
-BIGQUERY_DATASET_ID=trusted
-BIGQUERY_TABLE_ID=binance_btc_trades
-# TARGET_HOUR=2026-05-07T23:00:00  # opcional — backfill de hora específica
+├── .env                             (não commitar)
+└── .gitignore                       ✓
 ```
 
 ---
 
 ## Terraform
 
-Toda infra é gerenciada via Terraform. Recursos existentes criados manualmente precisam ser importados:
-
 ```bash
 cd infra/terraform
 terraform init
 terraform apply -var-file=environments/dev.tfvars
-
-# Importar recursos já existentes (executar uma vez)
-terraform import -var-file=environments/dev.tfvars \
-  google_pubsub_topic.btcbrl_trades projects/gcp-fin-data/topics/btcbrl-trades
-
-terraform import -var-file=environments/dev.tfvars \
-  google_storage_bucket.raw gcp-fin-data-bucket-dev
-
-terraform import -var-file=environments/dev.tfvars \
-  google_bigquery_dataset.trusted gcp-fin-data/trusted
 ```
 
-**Nota sobre Cloud Run:** imagens Docker precisam existir no Artifact Registry antes do `apply` com Cloud Run. Ordem:
-1. `terraform apply` sem recursos Cloud Run (comentar temporariamente)
-2. Build + push das imagens
-3. `terraform apply` completo
+**APIs GCP necessárias:** Compute Engine, Cloud Functions, Cloud Build, Cloud Scheduler, BigQuery Data Transfer
 
 ---
 
-## Status atual
+## Variáveis de ambiente (streamer VM — /opt/streamer/.env)
 
-| Componente | Status |
-|---|---|
-| Producer (`cloud-run/producer/app.py`) | ✓ implementado, testado localmente |
-| Consumer (`cloud-run/consumer/app.py`) | ✓ implementado, testado localmente (GCS only) |
-| ETL raw → trusted (`cloud-run/pipelines/btcbrl_raw_trusted.py`) | ✓ implementado |
-| Terraform (`infra/terraform/`) | ✓ escrito — pendente apply + import |
-| BigQuery trusted schema atualizado | ⬜ recriar via Terraform |
-| Docker build + Artifact Registry | ⬜ próximo passo |
-| Cloud Run deploy | ⬜ após Docker |
-| Cloud Scheduler (ETL horário) | ⬜ após Cloud Run Job |
-| README.md + technical_document.md | ✓ atualizados |
+```
+GCP_PROJECT_ID=gcp-fin-data
+GCS_BUCKET=us-gs-datalake
+GCS_LANDING_PREFIX=landing/binance
+BINANCE_STREAMS=btcbrl@trade
+```
 
 ---
 
 ## Regras do projeto
 - Sem overengineering: sem CI/CD por enquanto
-- Logs em stdout (Cloud Run captura automaticamente)
+- Logs em stdout (Cloud Functions / systemd journal)
 - Um arquivo por serviço — sem módulos extras
-- Consumer: responsabilidade única — Pub/Sub → GCS, sem transformação, sem BQ
-- ETL Pipeline: única porta de entrada para BigQuery Trusted
-- Credenciais via ADC local / Workload Identity no Cloud Run
+- Nomes de arquivos descritivos — nunca `main.py` para jobs
+- landing: GCS → BQ raw, sem transformação — só append
+- trusted: única porta de entrada para BigQuery Trusted — cast, dedup, MERGE
+- Credenciais via ADC local / Workload Identity em produção
 - **Repositório público:** sempre adicionar ao `.gitignore` qualquer arquivo que exponha credenciais
-- Imagem Docker de pipelines é compartilhada — um Dockerfile, múltiplos scripts `.py`
+
+---
+
+## Convenções de jobs
+
+### Estrutura de pastas
+
+```
+jobs/
+  {N}_{layer}/
+    {tech}_{source}/
+      {source}.py       # ou .sql para BQ jobs
+      requirements.txt  # somente Python
+```
+
+### Regras de nomenclatura
+- **Sem prefixo `job_`** — tudo dentro de `jobs/` já é um job; o prefixo é ruído
+- **Número `N` na camada** garante ordem alfabética = ordem do fluxo de dados
+- **Prefixo de tech** indica o ambiente de execução (ver tabela abaixo)
+- **Nome do arquivo** = nome da pasta sem o prefixo de tech (ex: pasta `cf_tesouro_leiloes` → arquivo `tesouro_leiloes.py`)
+- **Exceção**: serviços VM mantêm `app.py` — são serviços de longa duração, não scripts pontuais
+- **Entry point** da Cloud Function = nome do arquivo sem extensão (ex: `tesouro_leiloes`)
+
+### Camadas
+
+| Pasta | Camada | Movimento de dados |
+|---|---|---|
+| `0_landing` | Landing | Fonte externa → GCS JSONL |
+| `1_raw` | Raw | GCS → BigQuery raw (payload STRING, sem transformação) |
+| `2_trusted` | Trusted | BQ raw → BQ trusted (tipado, dedup, MERGE) |
+| `3_refined` | Refined | BQ trusted → BQ refined (dbt) |
+
+### Prefixos de tecnologia
+
+| Prefixo | Tecnologia |
+|---|---|
+| `cf` | Cloud Function (HTTP-triggered, curta duração) |
+| `vm` | GCE VM (serviço systemd de longa duração) |
+| `bq` | BigQuery Scheduled Query / Data Transfer Service |
+| `composer` | Cloud Composer DAG |
 
 ---
 
@@ -229,30 +253,12 @@ Toda função deve ter:
 - Docstring: uma linha de resumo + `:param name:` por parâmetro + `:return:`
 - Usar `str | None` para tipos opcionais — não `Optional[str]`
 
-```python
-def gcs_prefix_for_hour(hour: datetime, raw_prefix: str) -> str:
-    """Return the GCS object prefix for the given UTC hour.
-
-    :param hour: Target UTC hour (minute/second/microsecond ignored).
-    :param raw_prefix: Base GCS prefix, e.g. "btcbrl/raw".
-    :return: Full prefix string ending with "/".
-    """
-    return f"{raw_prefix}/{hour.year}/{hour.month:02d}/{hour.day:02d}/{hour.hour:02d}/"
-```
-
 ### Logger
 
-Configurar uma vez, após `load_dotenv()`. Nunca usar `print()` para mensagens operacionais.
-
 ```python
-import logging
-import sys
+import logging, sys
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-    stream=sys.stdout,
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
 logger = logging.getLogger(__name__)
 ```
 
@@ -267,14 +273,4 @@ logger.error("Merge failed | target=%s | error=%s", target_table, str(e))
 - **Atomicidade** — uma função faz exatamente uma tarefa
 - **Idempotência** — rodar com os mesmos inputs produz o mesmo resultado (MERGE, não append)
 - **Sem side effects** — toda escrita é decisão explícita do chamador
-- **Parâmetros explícitos** — funções não acessam globais internamente; constantes são lidas em `main()` e passadas para baixo
-
-### Tratamento de erros
-
-```python
-try:
-    # lógica
-except Exception as e:
-    logger.error("Operation failed | target=%s | error=%s", target, str(e))
-    raise
-```
+- **Parâmetros explícitos** — funções não acessam globais internamente; constantes são lidas no entry point e passadas para baixo

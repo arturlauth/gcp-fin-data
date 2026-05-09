@@ -1,6 +1,12 @@
-# BTCBRL Real-Time Data Platform
+# GCP Data Platform
 
-End-to-end streaming data pipeline ingesting live BTC/BRL trade events from Binance into a medallion architecture on GCP. Built for dev, designed to be production-ready.
+`pt-br`
+
+O propósito desse trabalho é demonstrar minha adaptabilidade para construir pipelines e serviços de dados em nuvem independente da stack. Cada decisão arquitetural está embasada tecnicamente no `docs/technical_document.md`. A estrutura foi pensada para escalar a nível organizacional (infra com Terraform, arquitetura Medallion, particionamento no BigQuery) e a nível de volume de dados.
+
+`en`
+
+The purpose of this work is to demonstrate my adaptability in building cloud-based data pipelines and services, independent of the stack. Each architectural decision is technically justified in `docs/technical_document.md`. The structure is designed to scale at the organizational level (Terraform infrastructure, Medallion architecture, BigQuery partitioning) and at the data volume level.
 
 ---
 
@@ -9,36 +15,29 @@ End-to-end streaming data pipeline ingesting live BTC/BRL trade events from Bina
 ```mermaid
 flowchart LR
     WS("Binance\nWebSocket")
-    PROD["Producer\nCloud Run Service"]
-    PS("Pub/Sub\nbtcbrl-trades")
-    CONS["Consumer\nCloud Run Service"]
-    GCS("GCS\nRaw Layer\nJSONL · YYYY/MM/DD/HH")
-    ETL["ETL Pipeline\nCloud Run Job · hourly"]
-    TRUST("BigQuery\nTrusted")
+    VM["Streamer\nGCE e2-micro\nsystemd service"]
+    GCS("GCS Landing\nJSONL · Hive partition")
+    CF["Cloud Function\nlanding → raw\ndaily · 2-day lookback"]
+    RAW("BigQuery Raw\nraw.btcbrl_trades\npartitioned by _load_date")
+    SQ["BQ Scheduled Query\nraw → trusted\ndaily MERGE"]
+    TRUST("BigQuery Trusted\ntrusted.binance_btc_trades\npartitioned by trade_time")
 
-    WS -->|"WSS · 5–30 msg/s"| PROD
-    PROD -->|"JSON publish"| PS
-    PS -->|"pull subscription"| CONS
-    CONS -->|"JSONL micro-batch\n500 msgs or 60s"| GCS
-    GCS -->|"hourly batch"| ETL
-    ETL -->|"MERGE on trade_id"| TRUST
+    WS -->|"WSS combined stream\n5–30 msg/s"| VM
+    VM -->|"JSONL micro-batch\n500 msgs or 60s"| GCS
+    GCS -->|"daily · 02:00 UTC"| CF
+    CF -->|"BQ Load Job\nappend only"| RAW
+    RAW -->|"MERGE on trade_id\ndedup + cast"| SQ
+    SQ --> TRUST
 ```
 
 ### Medallion Layers
 
 | Layer | Technology | Resource |
 |---|---|---|
-| Raw | GCS | `btcbrl/raw/YYYY/MM/DD/HH/trades_<ts>.jsonl` |
-| Trusted | BigQuery | `trusted.binance_btc_trades` |
-| Refined | BigQuery Views | `refined.*` — planned |
-
-### Component responsibilities
-
-| Component | Does | Does not |
-|---|---|---|
-| Producer | Binance WebSocket → Pub/Sub | no transformation |
-| Consumer | Pub/Sub → GCS raw (JSONL) | no transformation, no BigQuery |
-| ETL Pipeline | GCS raw → BigQuery Trusted (MERGE) | no Pub/Sub access |
+| Landing | GCS JSONL | `gs://us-gs-datalake/landing/binance/{symbol}_trades/year=YYYY/month=MM/day=DD/hour=HH/` |
+| Raw | BigQuery (append-only) | `raw.btcbrl_trades` — partitioned by `_load_date` |
+| Trusted | BigQuery (typed, deduped) | `trusted.binance_btc_trades` — partitioned by `trade_time` |
+| Refined | dbt | `refined.*` — planned |
 
 ---
 
@@ -46,95 +45,50 @@ flowchart LR
 
 | Component | Technology | Why |
 |---|---|---|
-| Streaming ingestion | Python `asyncio` + `websockets` | Single-threaded async I/O handles 5–30 msg/s without thread overhead |
-| Message broker | GCP Pub/Sub | Decouples producer from consumer; buffers up to 7 days on failure |
-| Raw storage | GCS (JSONL) | Immutable, replayable — single source of truth for backfills and schema evolution |
-| Analytical store | BigQuery | Serverless SQL, scales to petabytes, MERGE support |
-| ETL batch | Pure Python + BigQuery SDK | No Spark/Dataflow overhead at this volume |
+| Streaming ingestion | Python `asyncio` + `websockets` on GCE e2-micro | Single persistent WebSocket — no autoscaling needed, ~$7/month vs ~$62 for Cloud Run always-on |
+| Raw storage | GCS JSONL (Hive partitioned) | Immutable, replayable — source of truth for backfills and schema evolution |
+| Landing → Raw | Cloud Function 2nd gen + Cloud Scheduler | Daily batch load job via BQ Load API — no transformation, just append |
+| Raw → Trusted | BigQuery Scheduled Query (MERGE) | Dedup on `trade_id`, type casting, idempotent — runs daily |
+| Analytical store | BigQuery | Serverless SQL, partition pruning, MERGE support |
 | Infrastructure | Terraform | Reproducible multi-environment deploys |
-| Compute | Cloud Run Service + Job | Serverless, pay-per-use, no cluster management |
 
 ---
 
 ## Key Engineering Decisions
 
-### Why consumer writes only to GCS — not directly to BigQuery
+### Single streamer replaces producer + consumer + Pub/Sub
 
-A common pattern is to stream-insert directly into BigQuery from the consumer. We deliberately avoided this for three reasons:
+The original design used two Cloud Run services connected via Pub/Sub. For a single-source, single-sink pipeline this added cost and complexity with no benefit:
 
-1. **Schema evolution** — if Binance changes their payload, only the ETL needs updating. A consumer writing to BigQuery would couple ingestion to the schema.
-2. **Backfills** — GCS is the source of truth. Any historical hour can be reprocessed by re-running the ETL against the raw files, no Pub/Sub replay needed.
-3. **Single responsibility** — the consumer's job is reliable delivery to GCS. Transformation, typing, and deduplication belong to the ETL.
+- Pub/Sub adds ~$0 cost but requires two services, two service accounts, and IAM wiring
+- Cloud Run with `cpu_idle=false` costs ~$62/month per service — 18× more than an e2-micro VM
+- A single GCE VM running a systemd service is simpler, cheaper, and sufficient for one persistent WebSocket connection
 
-The WebSocket is a delivery mechanism imposed by the data provider, not a real-time analytics requirement.
+**Trade-off accepted:** in-memory buffer is lost on crash (vs Pub/Sub 7-day retention). Acceptable for analytics — losing a few seconds of trade data is fine.
 
----
+### Multi-stream via Binance combined endpoint
 
-### Producer — reliable WebSocket ingestion
+The streamer connects to `wss://stream.binance.com:9443/stream?streams=btcbrl@trade/btcusdt@trade/...` — one WebSocket for N symbols. Each trade is routed to its own GCS prefix by symbol (`btcbrl_trades/`, `btcusdt_trades/`). Adding a new symbol = one comma-separated entry in `BINANCE_STREAMS`. No new infra needed.
 
-**asyncio + `run_in_executor`:** The Pub/Sub client is synchronous (blocking). Wrapping it in `run_in_executor` offloads the blocking call to a thread pool while keeping the asyncio event loop free to receive the next WebSocket message — no message loss during high-frequency bursts.
+### Why GCS before BigQuery (not streaming inserts)
 
-**Graceful SIGTERM shutdown:** Cloud Run sends SIGTERM before terminating a container. A signal handler sets a stop event; the loop exits cleanly on the next iteration rather than dying mid-publish.
+1. **Schema evolution** — if Binance changes their payload, only the trusted layer query needs updating. The raw layer stores verbatim JSON.
+2. **Backfills** — GCS is the source of truth. Any historical window can be reprocessed by re-triggering the Cloud Function with `{"reference_date": "YYYY-MM-DD"}`.
+3. **Cost** — BigQuery streaming inserts cost $0.01/200MB. Batch loads via GCS are free.
 
-**Self-healing reconnect:** Binance closes WebSocket connections after 24h by design. The reconnect loop is automatic — no human intervention or container restart needed.
+### Raw layer — payload STRING + metadata
 
----
+BigQuery field names are case-insensitive — Binance fields `e`/`E`, `t`/`T`, `m`/`M` would conflict if mapped directly. Storing the full JSON in `payload STRING` keeps raw schema-agnostic. Metadata columns (`_source_file`, `_ingested_at`, `_load_date`) enable traceability and partition pruning.
 
-### Consumer — reliable raw landing
+### Trusted layer — MERGE on trade_id
 
-```mermaid
-sequenceDiagram
-    participant PS as Pub/Sub
-    participant C as Consumer
-    participant GCS as GCS Raw
-
-    loop Pull cycle (max 50 msgs)
-        PS->>C: deliver messages
-        C->>C: validate JSON + buffer
-    end
-    Note over C: buffer ≥ 500 msgs OR 60s elapsed
-    C->>GCS: flush JSONL batch
-    C->>PS: ack all messages
-    Note over C: ack only after GCS write succeeds
-```
-
-**Ack-after-write:** Messages are acknowledged only after the GCS write succeeds. If GCS fails, Pub/Sub redelivers — no data loss.
-
-**Poison pill handling:** Unparseable messages are immediately acked with an error log. Without this, a single malformed message blocks the consumer indefinitely until Pub/Sub's 7-day retention expires.
-
-**Final flush on shutdown:** On SIGTERM, buffered messages are flushed before the process exits — zero data loss on Cloud Run lifecycle events.
-
----
-
-### ETL Pipeline — idempotent batch processing
-
-**`trade_id` as primary key, not `event_time`:** Multiple trades can share the same millisecond timestamp. `t` (trade_id) is Binance's own sequential unique identifier — confirmed from production data.
-
-**MERGE over append:** `MERGE ON trade_id` is idempotent — running the ETL for the same hour multiple times always produces the same result. A plain `INSERT` would create duplicates on retries.
-
-**Staging table pattern:** Load new data into a temp staging table → `MERGE` staging into target → drop staging. Keeps the merge atomic without scanning the production table during load.
-
-**String → NUMERIC for prices:** Binance sends prices as strings (`"p": "394285.00000000"`). Converting to Python `float` before loading introduces floating-point rounding. Passing the raw string to BigQuery's JSON loader preserves exact decimal precision.
-
-**Backfill by design:** Set `TARGET_HOUR=2026-05-07T23:00:00` to reprocess any historical hour. No code changes needed.
+`MERGE ON trade_id` is idempotent — running the scheduled query multiple times for the same window always produces the same result. `trade_id` (`t`) is Binance's own sequential unique identifier, confirmed safer than `event_time` (`E`) which is not unique across concurrent trades.
 
 ---
 
 ## Infrastructure
 
-Fully managed via Terraform with one GCP project per environment:
-
-```
-infra/terraform/
-├── main.tf                    # all GCP resources
-├── variables.tf
-├── outputs.tf
-└── environments/
-    ├── dev.tfvars             # project: gcp-fin-data
-    └── prod.tfvars            # project: gcp-fin-data-prod
-```
-
-**Least-privilege service accounts.** Each component has its own service account scoped to exactly what it needs — producer can only publish, consumer can only subscribe and write to GCS, pipeline can only read GCS and write to BigQuery Trusted.
+Fully managed via Terraform. One GCP project per environment:
 
 ```bash
 cd infra/terraform
@@ -142,55 +96,42 @@ terraform init
 terraform apply -var-file=environments/dev.tfvars
 ```
 
+**Least-privilege service accounts:**
+- `sa-streamer` — `storage.objectAdmin` on landing bucket only
+- `sa-pipeline` — `storage.objectViewer` on landing + `bigquery.dataEditor` on raw/trusted + `bigquery.jobUser`
+
+**GCP-managed buckets (auto-created, not in Terraform):**
+- `gcf-v2-sources-<project-number>-<region>` — Cloud Functions Gen 2 copies the function source here during the Cloud Build step. GCP-owned, recreated automatically if deleted.
+- `gcp-fin-data_cloudbuild` — Cloud Build stores build logs and layer cache here when deploying the Cloud Function. GCP-owned.
+
 ---
 
 ## Project Structure
 
 ```
 .
-├── cloud-run/
-│   ├── producer/              # Binance WebSocket → Pub/Sub
-│   │   ├── app.py
-│   │   ├── requirements.txt
-│   │   └── Dockerfile
-│   ├── consumer/              # Pub/Sub → GCS raw (no BigQuery)
-│   │   ├── app.py
-│   │   ├── requirements.txt
-│   │   └── Dockerfile
-│   └── pipelines/             # batch ETL jobs (shared Docker image)
-│       ├── btcbrl_raw_trusted.py
-│       ├── requirements.txt
-│       └── Dockerfile
+├── jobs/
+│   ├── 0_landing/
+│   │   ├── vm_binance_btcbrl/     # GCE VM: Binance WS → GCS landing
+│   │   └── cf_tesouro_leiloes/    # Cloud Function: Tesouro API → GCS landing
+│   ├── 1_raw/
+│   │   └── cf_binance_btcbrl/     # Cloud Function: GCS landing → BQ raw (append only)
+│   ├── 2_trusted/
+│   │   └── bq_binance_btcbrl/     # BQ Scheduled Query: BQ raw → BQ trusted (MERGE)
+│   └── 3_refined/                 # planned — dbt
+├── dbt/                           # Refined layer — planned
 ├── infra/
 │   └── terraform/
-├── technical_document.md      # design rationale (PT-BR)
-└── README.md
+│       ├── main.tf
+│       ├── variables.tf
+│       ├── outputs.tf
+│       ├── streamer_startup.sh.tpl
+│       └── environments/
+│           ├── dev.tfvars
+│           └── prod.tfvars
+└── docs/
+    └── technical_document.md
 ```
-
----
-
-## Running Locally
-
-```bash
-python -m venv .venv && source .venv/bin/activate
-
-# Producer
-pip install -r cloud-run/producer/requirements.txt
-python cloud-run/producer/app.py
-
-# Consumer
-pip install -r cloud-run/consumer/requirements.txt
-python cloud-run/consumer/app.py
-
-# ETL — previous hour
-pip install -r cloud-run/pipelines/requirements.txt
-python cloud-run/pipelines/btcbrl_raw_trusted.py
-
-# ETL — specific hour backfill
-TARGET_HOUR=2026-05-07T23:00:00 python cloud-run/pipelines/btcbrl_raw_trusted.py
-```
-
-Credentials: `gcloud auth application-default login` — no service account key files.
 
 ---
 
@@ -198,8 +139,8 @@ Credentials: `gcloud auth application-default login` — no service account key 
 
 | Decision | Works now | Changes at scale |
 |---|---|---|
-| Synchronous Pub/Sub pull | Simple, controllable batching | Switch to streaming pull with flow control |
-| Pure Python ETL | No Spark overhead for ~10k trades/hour | Dataflow if volume grows 100× |
-| Hourly ETL trigger | Clean boundaries, easy backfill | Sub-hour partitioning if latency SLA tightens |
+| Single GCE VM | Simple, $7/month, one WebSocket | Multiple VMs or Cloud Run if >10 symbols with high frequency |
+| Daily batch (Cloud Function) | Clean daily partitions, easy backfill | Sub-hour if latency SLA tightens — switch to GCS trigger |
+| BQ Scheduled Query | Serverless, no infra | dbt for lineage, testing, and multi-table dependencies |
 | Local Terraform state | Fine for solo dev | GCS backend with state locking for team |
-| No dead-letter queue | Poison pills logged and acked | Add DLQ subscription for malformed message audit trail |
+| payload STRING in raw | Schema-agnostic, no migration cost | Typed columns if downstream teams need direct raw queries |

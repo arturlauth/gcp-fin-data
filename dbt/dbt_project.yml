@@ -1,0 +1,16 @@
+name: gcp_fin_data
+version: '1.0.0'
+config-version: 2
+
+profile: gcp_fin_data
+
+model-paths: ["models"]
+
+models:
+  gcp_fin_data:
+    trusted:
+      +materialized: table
+      +schema: trusted
+    refined:
+      +materialized: view
+      +schema: refined
