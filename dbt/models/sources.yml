@@ -11,6 +11,8 @@ sources:
         description: "Tesouro Nacional auction API — all endpoints multiplexed, endpoint_name as discriminator."
       - name: bacen_taxa_juros_mensal
         description: "BACEN taxaJuros — taxas mensais por instituição e modalidade."
+      - name: bacen_ifdata_lista_relatorio
+        description: "BACEN IFDATA — catálogo de relatórios disponíveis (referência estática, atualizada trimestralmente)."
       - name: bacen_ifdata_cadastro
         description: "BACEN IFDATA — cadastro de instituições financeiras por segmento."
       - name: bacen_meios_pagamento_mensal
