@@ -151,6 +151,11 @@ def _stream_range_to_gcs(
     logger.info("Range fetch | entity=%s | months=%d | start=%s | end=%s",
                 ep.entity, len(months), months[0], months[-1])
 
+    # Don't retry HTTP 500 in range mode — BACEN returns 500 for months not yet published
+    range_retry = Retry(total=3, status_forcelist=[429, 502, 503, 504], backoff_factor=2)
+    range_session = requests.Session()
+    range_session.mount("https://", HTTPAdapter(max_retries=range_retry))
+
     blob = bucket_obj.blob(blob_path)
     total = 0
 
@@ -164,7 +169,10 @@ def _stream_range_to_gcs(
 
             base_url = f"{OLINDA_BASE}/{ep.service}/versao/{ep.version}/odata/{entity_path}"
             skip = 0
-            resp = session.get(f"{base_url}?$format=json&$top={PAGE_SIZE}&$skip={skip}", timeout=300)
+            resp = range_session.get(f"{base_url}?$format=json&$top={PAGE_SIZE}&$skip={skip}", timeout=300)
+            if resp.status_code == 500:
+                logger.warning("Month not yet published | date=%s | skipping", date_val)
+                continue
             resp.raise_for_status()
             page: list[dict] = resp.json().get("value", [])
 
@@ -180,7 +188,7 @@ def _stream_range_to_gcs(
                 skip += len(page)
                 if len(page) < PAGE_SIZE:
                     break
-                resp = session.get(f"{base_url}?$format=json&$top={PAGE_SIZE}&$skip={skip}", timeout=300)
+                resp = range_session.get(f"{base_url}?$format=json&$top={PAGE_SIZE}&$skip={skip}", timeout=300)
                 resp.raise_for_status()
                 page = resp.json().get("value", [])
 
