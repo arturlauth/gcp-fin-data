@@ -161,6 +161,14 @@ resource "google_cloudfunctions2_function_iam_member" "pipeline_cf_invoker" {
   member         = "serviceAccount:${google_service_account.pipeline.email}"
 }
 
+resource "google_cloud_run_v2_service_iam_member" "pipeline_landing_to_raw_run_invoker" {
+  project  = var.project_id
+  location = var.region
+  name     = google_cloudfunctions2_function.landing_to_raw.name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${google_service_account.pipeline.email}"
+}
+
 # ── Streamer VM ───────────────────────────────────────────────────────────────
 
 resource "google_storage_bucket_object" "streamer_app" {
@@ -318,6 +326,14 @@ resource "google_cloudfunctions2_function_iam_member" "pipeline_tesouro_leiloes_
   member         = "serviceAccount:${google_service_account.pipeline.email}"
 }
 
+resource "google_cloud_run_v2_service_iam_member" "pipeline_tesouro_leiloes_run_invoker" {
+  project  = var.project_id
+  location = var.region
+  name     = google_cloudfunctions2_function.tesouro_leiloes.name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${google_service_account.pipeline.email}"
+}
+
 resource "google_cloud_scheduler_job" "tesouro_leiloes_daily" {
   name      = "tesouro-leiloes-daily"
   region    = var.region
@@ -413,6 +429,14 @@ resource "google_cloudfunctions2_function_iam_member" "pipeline_tesouro_leiloes_
   cloud_function = google_cloudfunctions2_function.tesouro_leiloes_raw.name
   role           = "roles/cloudfunctions.invoker"
   member         = "serviceAccount:${google_service_account.pipeline.email}"
+}
+
+resource "google_cloud_run_v2_service_iam_member" "pipeline_tesouro_leiloes_raw_run_invoker" {
+  project  = var.project_id
+  location = var.region
+  name     = google_cloudfunctions2_function.tesouro_leiloes_raw.name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${google_service_account.pipeline.email}"
 }
 
 resource "google_cloud_scheduler_job" "tesouro_leiloes_raw_daily" {
@@ -568,6 +592,14 @@ resource "google_cloudfunctions2_function_iam_member" "pipeline_bacen_olinda_lan
   member         = "serviceAccount:${google_service_account.pipeline.email}"
 }
 
+resource "google_cloud_run_v2_service_iam_member" "pipeline_bacen_olinda_landing_run_invoker" {
+  project  = var.project_id
+  location = var.region
+  name     = google_cloudfunctions2_function.bacen_olinda_landing.name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${google_service_account.pipeline.email}"
+}
+
 resource "google_cloud_scheduler_job" "bacen_olinda_landing_daily" {
   name      = "bacen-olinda-landing-daily"
   region    = var.region
@@ -634,6 +666,14 @@ resource "google_cloudfunctions2_function_iam_member" "pipeline_bacen_olinda_raw
   cloud_function = google_cloudfunctions2_function.bacen_olinda_raw.name
   role           = "roles/cloudfunctions.invoker"
   member         = "serviceAccount:${google_service_account.pipeline.email}"
+}
+
+resource "google_cloud_run_v2_service_iam_member" "pipeline_bacen_olinda_raw_run_invoker" {
+  project  = var.project_id
+  location = var.region
+  name     = google_cloudfunctions2_function.bacen_olinda_raw.name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${google_service_account.pipeline.email}"
 }
 
 resource "google_cloud_scheduler_job" "bacen_olinda_raw_daily" {

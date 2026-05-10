@@ -1,223 +1,202 @@
-# GCP Data Platform
+# GCP Financial Data Platform
 
-## Overview
+A portfolio project to practice GCP and dbt, explore available services, and show how a data engineer can transition between stacks. Two parallel pipelines ingest financial data from public sources — one streaming, one batch — into BigQuery for analytical use.
 
-`pt-br`
+The structure is designed to scale at the organizational level (Terraform infrastructure, Medallion architecture, BigQuery partitioning) and at the data volume level. More modern approaches like a lakehouse architecture with open table formats (Iceberg) and Cloud Composer for orchestration were intentionally skipped to keep costs low.
 
-O propósito desse trabalho é demonstrar minha adaptabilidade para construir pipelines e serviços de dados em nuvem independente da stack. A estrutura foi pensada para escalar a nível organizacional, com infraestrutura em Terraform, arquitetura Medallion, separação clara entre ingestão, raw, trusted e refined, e uso de BigQuery para armazenamento analítico particionado.
-
-`en`
-
-The purpose of this work is to demonstrate my adaptability in building cloud-based data pipelines and services, independent of the stack. The structure is designed to scale at the organizational level, using Terraform infrastructure, Medallion architecture, clear separation between ingestion, raw, trusted and refined layers, and BigQuery as the analytical storage layer.
+> PT-BR version: [README.pt-br.md](README.pt-br.md)
 
 ---
 
-## What Data Exists
+## Architecture
 
-The platform currently ingests data from three source groups:
+```
+Binance WebSocket ──┐
+BACEN REST APIs  ───┼──► GCS Landing (JSONL) ──► BigQuery Raw ──► dbt Trusted ──► dbt Refined
+Tesouro REST API ───┘
+```
 
-| Source | Type | Description | Landing Path | Raw Tables |
-|---|---|---|---|---|
-| Binance | Streaming WebSocket | Real-time crypto trades, currently focused on BTC/BRL and expandable to more symbols | `landing/binance/{symbol}_trades/` | `raw.btcbrl_trades` |
-| BACEN Dados Abertos | Batch APIs | Public financial datasets from Banco Central, including Pix, SPI, institutions, credit rates and IFData | `landing/bacen/{entity}/` | `raw.bacen_*` |
-| Tesouro Nacional | Batch API | Public auction data from Tesouro Nacional | `landing/tesouro/leiloes/` | `raw.tesouro_leiloes` |
+**Medallion layers:**
 
----
-
-## Data Layers
-
-| Layer | Technology | Purpose |
+| Layer | Storage | Role |
 |---|---|---|
-| Landing | GCS JSONL | Stores the original API/WebSocket payloads exactly as received |
-| Raw | BigQuery append-only tables | Stores raw records with minimal structure and metadata |
-| Trusted | dbt incremental models | Applies typing, validation, deduplication and partitioning via MERGE |
-| Refined | dbt views / tables | Business-ready models and analytical views |
+| Landing | GCS JSONL | Raw payloads exactly as received, immutable and replayable |
+| Raw | BigQuery (append-only) | Minimal structure: `payload STRING` + metadata columns |
+| Trusted | BigQuery (dbt incremental MERGE) | Typed, deduplicated, partitioned, with column descriptions |
+| Refined | BigQuery (dbt) | Business-ready models and analytical aggregations |
 
 ---
 
-## High-Level Architecture
+## Data Sources
 
-~~~mermaid
-flowchart LR
-    BINANCE["Binance WebSocket"]
-    BACEN["BACEN APIs"]
-    TESOURO["Tesouro API"]
+| Source | Type | Content | Raw Tables |
+|---|---|---|---|
+| [Binance](https://binance.com) | WebSocket streaming | BTC/BRL and BTC/USDT real-time trades | `raw.btcbrl_trades` |
+| [BACEN Dados Abertos](https://dadosabertos.bcb.gov.br) | Batch REST (Olinda) | Credit rates, IFData, payment methods, market expectations | `raw.bacen_*` (5 tables: taxa_juros_mensal, ifdata_cadastro, ifdata_lista_relatorio, meios_pagamento_mensal, expectativas_anuais) |
+| [Tesouro Nacional](https://www.tesourotransparente.gov.br) | Batch REST | Government bond auctions (LFT, NTN-B, LTN, NTN-F) | `raw.tesouro_leiloes` |
 
-    LANDING["GCS Landing"]
+---
 
-    RAW["BigQuery Raw"]
-    TRUSTED["BigQuery Trusted"]
-    REFINED["dbt Refined"]
+## Ingestion Strategy
 
-    BINANCE --> LANDING
-    BACEN --> LANDING
-    TESOURO --> LANDING
+### Streaming — Binance
 
-    LANDING --> RAW
-    RAW --> TRUSTED
-    TRUSTED --> REFINED
-~~~
+A long-running GCE VM (`e2-micro`) connects to the Binance WebSocket combined stream endpoint via `asyncio` + `websockets`. Trade events are pushed by Binance and buffered in memory per symbol. The buffer flushes to GCS as a JSONL micro-batch when it reaches **500 messages or 60 seconds**, whichever comes first — avoiding both data loss and excessive small files.
+
+- **Landing:** JSONL files partitioned by hour (`year=YYYY/month=MM/day=DD/hour=HH/trades_{epoch_ms}.jsonl`)
+- **Raw:** BigQuery table storing the original payload as `STRING` alongside metadata columns (`_source_file`, `_ingested_at`, `_load_date`), partitioned by date with 90-day expiry
+- **Trusted:** Daily dbt run with a d-2 lookback. Uses incremental MERGE to guarantee no duplicate events, partitioned by trade date
+
+### Batch — BACEN
+
+A Cloud Function backed by a Python package parametrized for the Olinda REST API. Currently covers **5 endpoints** across 3 domains (credit rates, IFData, and payment expectations), running on monthly or quarterly schedules via `ThreadPoolExecutor`.
+
+Each run performs a **full historical load** for simplicity — the landing is transient:
+
+```
+landing cleared → full API history fetched → JSONL written to landing
+→ raw load job appends to BigQuery (with _insert_date for traceback)
+→ landing cleared
+```
+
+- **Landing:** Transient staging area; receives the full dataset on each run
+- **Raw:** Append-only BigQuery table; each run adds a new partition with today's `_insert_date`
+- **Trusted:** MERGE + deduplication keeping only the record with the latest `_insert_date` per key
+
+### Batch — Tesouro
+
+A Cloud Function fetches **8 Tesouro API endpoints sequentially**: 7 full snapshots (benchmarks, comunicados, dealers, calendario, homologacao, portarias, editais) on every run, plus `resultados` iterated year-by-year from 2019. Daily runs fetch only the current year for `resultados`; a full-load trigger (`{"full_load": true}`) fetches all years from 2019.
+
+- **Landing:** Persistent — files accumulate by ingestion date partition (unlike BACEN's transient staging)
+- **Raw:** Append-only BigQuery table with payload + metadata columns
+- **Trusted:** dbt incremental MERGE, same pattern as the other pipelines
+
+---
+
+## Infrastructure
+
+All infrastructure is managed via **Terraform** (no manual console clicks).
+
+| Service | Usage |
+|---|---|
+| GCE `e2-micro` VM | Binance WebSocket streamer — always-on systemd service |
+| GCS Bucket | Landing zone for all JSONL files (Hive-partitioned paths) |
+| Cloud Functions 2nd gen | Landing jobs (BACEN, Tesouro) + GCS-to-BigQuery raw loaders |
+| Cloud Run Job | dbt build — raw → trusted + refined |
+| Cloud Scheduler | Triggers each step on a fixed UTC schedule |
+| BigQuery | Raw (append-only) + Trusted + Refined analytical layers |
+| Artifact Registry | Docker image for the dbt Cloud Run Job |
+| Service Accounts | Least-privilege: `sa-streamer` (GCS write), `sa-pipeline` (BQ + CF + CR) |
 
 ---
 
 ## Orchestration
 
-No workflow orchestrator (Airflow, Composer). Each step is an independent, idempotent unit triggered by Cloud Scheduler. Order is enforced by staggered schedules with enough buffer between steps.
+No workflow orchestrator. Each step is an independent, idempotent unit triggered by Cloud Scheduler with staggered times that provide enough buffer between stages.
 
-| Time (UTC) | Step | Component |
-|---|---|---|
-| Always on | Binance streaming → GCS landing | GCE VM `systemd` service |
-| 02:00 | Binance GCS → BigQuery raw | Cloud Function |
-| 02:30 | BACEN APIs → GCS landing (daily endpoints) | Cloud Function |
-| 03:00 | BACEN APIs → GCS landing (monthly endpoints) | Cloud Function |
-| 03:30 | BACEN APIs → GCS landing (quarterly endpoints) | Cloud Function |
-| 04:00 | BACEN GCS → BigQuery raw | Cloud Function |
-| 05:00 | Tesouro API → GCS landing | Cloud Function |
-| 06:00 | Tesouro GCS → BigQuery raw | Cloud Function |
-| 07:00 | dbt build — raw → trusted + refined | Cloud Run Job |
-
----
-
-## BACEN Datasets
-
-BACEN ingestion is organized by business domain.
-
-| Domain | Examples | Frequency |
-|---|---|---|
-| Institutions | supervised entities, cooperatives, institutions in operation | Daily |
-| Pix | Pix keys, transactions, fraud statistics, municipality-level Pix data | Monthly |
-| SPI | Pix settlement and availability statistics | Daily |
-| Credit Rates | institutional credit rates and PJ interest rate series | Daily / monthly |
-| IFData | financial institution registration and quarterly metrics | Quarterly |
-
-Each dataset lands as JSONL in GCS and is loaded into a dedicated BigQuery raw table.
-
-Example:
-
-~~~text
-landing/bacen/pix_chaves/year=2026/month=05/day=08/pix_chaves.jsonl
-↓
-raw.bacen_pix_chaves
-~~~
+| UTC | Step |
+|---|---|
+| Always on | Binance WebSocket → GCS landing |
+| 02:00 | Binance GCS → BigQuery raw |
+| 02:30 | BACEN APIs → GCS landing (daily) |
+| 03:00 | BACEN APIs → GCS landing (monthly) |
+| 03:30 | BACEN APIs → GCS landing (quarterly) |
+| 04:00 | BACEN GCS → BigQuery raw |
+| 05:00 | Tesouro API → GCS landing |
+| 06:00 | Tesouro GCS → BigQuery raw |
+| 07:00 | dbt build — trusted + refined |
 
 ---
 
-## Binance Data
+## Monitoring
 
-Binance data is collected from a WebSocket stream and written to GCS in JSONL micro-batches.
+Observability is handled entirely through **Cloud Logging**. Cloud Functions and the dbt Cloud Run Job write structured logs to stdout (captured automatically by GCP). The GCE VM logs via `systemd journal`, also forwarded to Cloud Logging.
 
-Example landing path:
+No dedicated monitoring dashboard or alerting was configured — this is a portfolio project and the cost of Cloud Monitoring custom metrics was not justified.
 
-~~~text
-landing/binance/btcbrl_trades/year=2026/month=05/day=08/hour=14/
-~~~
+---
 
-The raw BigQuery table stores:
+## Design Decisions
 
-- original payload
-- source file
-- ingestion timestamp
-- load date
+### What was not used and why
 
-The trusted layer extracts and types fields such as:
+| Tool | Reason not used |
+|---|---|
+| Apache Iceberg / Delta Lake | Open table formats add significant cost and complexity (Dataproc or Spark required for compaction/maintenance). Not justified for a portfolio at this scale. |
+| Cloud Composer (Airflow) | Minimum ~$300/month for the smallest environment. Staggered Cloud Scheduler achieves the same dependency ordering for free. |
+| Cloud Dataflow | Per-job pricing makes it expensive for low-volume batch. Cloud Functions cover all ingestion needs at a fraction of the cost. |
+| CI/CD pipeline | Not implemented — infrastructure changes are applied manually via `terraform apply`. |
 
-- trade id
-- symbol
-- price
-- quantity
-- trade time
-- buyer maker flag
+### What was intentionally kept simple
+
+- Landing is immutable and replayable — raw payloads are never modified.
+- Raw layer is append-only — no updates, no deletes.
+- Typing, deduplication and MERGE happen only in trusted (dbt), so the boundary is explicit.
+- Each Cloud Function is a single Python file (or a small package for multi-domain jobs like BACEN). No frameworks, no unnecessary abstraction.
 
 ---
 
 ## Project Structure
 
-~~~text
+```
 .
 ├── jobs/
 │   ├── 0_landing/
-│   │   ├── vm_binance_btcbrl/     # Binance WebSocket → GCS landing
-│   │   ├── cf_tesouro_leiloes/    # Tesouro API → GCS landing
-│   │   └── cf_bacen/              # BACEN APIs → GCS landing
-│   │       ├── main.py
-│   │       ├── clients/
-│   │       ├── domains/
-│   │       └── config/
-│   │
+│   │   ├── vm_binance_btcbrl/     # Binance WebSocket → GCS (asyncio, systemd)
+│   │   ├── cf_bacen/              # BACEN APIs → GCS (ThreadPoolExecutor, 16 endpoints)
+│   │   │   ├── main.py
+│   │   │   ├── clients/           # olinda.py, sgs.py
+│   │   │   ├── domains/           # institutions, spi, credit_rates, pix, ifdata
+│   │   │   └── config/            # endpoint definitions
+│   │   └── cf_tesouro_leiloes/    # Tesouro API → GCS
 │   ├── 1_raw/
-│   │   ├── cf_binance_btcbrl/     # GCS landing → BigQuery raw
-│   │   ├── cf_tesouro_leiloes/    # GCS landing → BigQuery raw
-│   │   └── cf_bacen/              # GCS landing → BigQuery raw.bacen_*
-│   │       ├── main.py
-│   │       ├── loaders/
-│   │       └── config/
-│   │
-│   ├── 2_trusted/
-│   │   └── bq_binance_btcbrl/     # BigQuery scheduled query: raw → trusted
-│   │
-│   └── 3_refined/                 # owned by dbt (see dbt/ folder)
-│
-├── dbt/                           # trusted + refined layers
-│
-└── infra/
-    └── terraform/
-        ├── main.tf
-        ├── variables.tf
-        ├── outputs.tf
-        ├── streamer_startup.sh.tpl
-        └── environments/
-            ├── dev.tfvars
-            └── prod.tfvars
-~~~
+│   │   ├── cf_binance_btcbrl/     # GCS → raw.btcbrl_trades
+│   │   ├── cf_bacen/              # GCS → raw.bacen_* (16 tables)
+│   │   └── cf_tesouro_leiloes/    # GCS → raw.tesouro_leiloes
+│   ├── 2_trusted/                 # owned by dbt
+│   └── 3_refined/                 # owned by dbt
+├── dbt/
+│   ├── models/
+│   │   ├── trusted/               # incremental MERGE models
+│   │   └── refined/               # business-ready aggregations
+│   └── macros/
+├── infra/
+│   └── terraform/
+│       ├── main.tf
+│       ├── variables.tf
+│       └── environments/
+│           ├── dev.tfvars
+│           └── prod.tfvars
+└── CLAUDE.md
+```
 
 ---
 
-## What This Data Tells
+## Screenshots
 
-### Brazilian Government Debt Market (Tesouro Leilões)
+### BigQuery — trusted table schema with column descriptions
+![BigQuery trusted table schema](<imgs/Captura de tela 2026-05-10 172820.png>)
 
-The Treasury holds weekly auctions to finance public debt. Four bond types are sold:
+### Cloud Run Job — dbt-trusted execution history
+![dbt-trusted Cloud Run Job](<imgs/Captura de tela 2026-05-10 173028.png>)
 
-| Bond | Type | Avg rate (2019–2025) | Total issued |
-|---|---|---|---|
-| LFT | Floating (Selic) | 9.2% nominal | R$ 1.0 trillion |
-| NTN-B | Inflation-linked (IPCA+) | 4.9% real | R$ 830 billion |
-| LTN | Fixed rate, no coupon | 7.6% | R$ 715 billion |
-| NTN-F | Fixed rate + semi-annual coupons | 8.8% | R$ 153 billion |
+### Cloud Functions — deployed services
+![Cloud Functions list](<imgs/Captura de tela 2026-05-10 173036.png>)
 
-**Demand signal:** `cobertura_ratio = quantidade_aceita / oferta`. When it drops below 1.0, the market refused to buy all bonds offered — a fiscal stress signal. LTN auctions showed repeated coverage failures in late 2024 as fixed rates climbed from 9.9% (Jan) to 13.7% (Dec), while NTN-B stayed fully subscribed throughout, reflecting persistent inflation hedging demand.
+### Cloud Scheduler — pipeline jobs
+![Cloud Scheduler jobs](<imgs/Captura de tela 2026-05-10 173226.png>)
 
-### Real-Time Crypto (Binance)
-
-BTC/BRL and BTC/USDT trades captured tick-by-tick via WebSocket. Useful for correlating Brazilian macro events (rate decisions, fiscal news) with crypto price action in the local market.
-
-### Brazilian Financial System (BACEN)
-
-16 datasets from Banco Central covering Pix transaction volumes, SPI settlement statistics, institution registries, and credit rates. Useful for tracking the growth of instant payments and the evolution of credit conditions across the Brazilian financial system.
+### GCS — Hive-partitioned landing files (Binance trades)
+![GCS landing bucket](<imgs/Captura de tela 2026-05-10 173315.png>)
 
 ---
 
-## Design Principles
-
-- Keep landing immutable and replayable.
-- Keep raw append-only.
-- Apply typing and deduplication only in trusted.
-- Keep ingestion code separated by source/domain.
-- Use BigQuery for analytical processing.
-- Use Terraform for reproducible infrastructure.
-- Use dbt for trusted and refined layers — incremental MERGE, dedup, data quality tests.
-
----
-
-## Current Status
+## Status
 
 | Area | Status |
 |---|---|
-| Binance landing | Implemented |
-| Binance raw | Implemented |
-| Binance trusted | Implemented |
-| BACEN landing | Implemented |
-| BACEN raw | Implemented |
-| Tesouro landing/raw/trusted | Implemented |
-| dbt refined (Tesouro) | Implemented |
-| dbt refined (BACEN, Binance) | Planned |
+| Binance landing + raw + trusted | Done |
+| BACEN landing + raw | Done |
+| BACEN trusted (dbt) | In progress |
+| Tesouro landing + raw + trusted + refined | Done |
+| BACEN / Binance refined | Not planned |
