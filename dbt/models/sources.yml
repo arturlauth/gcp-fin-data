@@ -1,0 +1,11 @@
+version: 2
+
+sources:
+  - name: raw
+    database: gcp-fin-data
+    schema: raw
+    tables:
+      - name: btcbrl_trades
+        description: "Binance trade events — payload as raw JSON, partitioned by _load_date."
+      - name: tesouro_leiloes
+        description: "Tesouro Nacional auction API — all endpoints multiplexed, endpoint_name as discriminator."

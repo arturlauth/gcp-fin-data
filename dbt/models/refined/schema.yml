@@ -1,0 +1,26 @@
+version: 2
+
+models:
+  - name: tesouro_leiloes_enriched
+    description: "Resultados de leilão enriquecidos — uma linha por leilão (num_edital), com flag de calendário, período de benchmark, métricas derivadas e agregações por janela."
+    columns:
+      - name: num_edital
+        tests: [unique, not_null]
+      - name: data_leilao
+        tests: [not_null]
+      - name: titulo
+        tests: [not_null]
+
+  - name: tesouro_leiloes_por_titulo
+    description: "Sumário histórico por título — volume total, taxa média, cobertura, ticket médio, prazo médio."
+    columns:
+      - name: titulo
+        tests: [not_null]
+
+  - name: tesouro_leiloes_stress
+    description: "Leilões com demanda insuficiente (pct_cobertura < 1) — sinal de stress de mercado."
+    columns:
+      - name: num_edital
+        tests: [not_null]
+      - name: data_leilao
+        tests: [not_null]

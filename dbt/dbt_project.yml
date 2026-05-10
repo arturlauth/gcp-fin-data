@@ -5,11 +5,17 @@ config-version: 2
 profile: gcp_fin_data
 
 model-paths: ["models"]
+macro-paths: ["macros"]
 
 models:
   gcp_fin_data:
+    +persist_docs:
+      relation: true
+      columns: true
     trusted:
-      +materialized: table
+      +materialized: incremental
+      +incremental_strategy: merge
+      +on_schema_change: fail
       +schema: trusted
     refined:
       +materialized: view

@@ -73,7 +73,11 @@ def build_blob_path(prefix: str, endpoint: str, ingested_at: date, suffix: str =
     :return: Full blob path.
     """
     filename = f"{endpoint}{suffix}.jsonl"
-    return f"{prefix}/{endpoint}/ingested_at={ingested_at}/{filename}"
+    return (
+        f"{prefix}/{endpoint}"
+        f"/year={ingested_at.year}/month={ingested_at.strftime('%m')}/day={ingested_at.strftime('%d')}"
+        f"/{filename}"
+    )
 
 
 def upload_jsonl(

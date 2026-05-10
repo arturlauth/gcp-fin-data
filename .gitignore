@@ -6,6 +6,12 @@ __pycache__/
 .claude
 ignore/
 
+# dbt
+dbt/profiles.yml
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+
 # Terraform
 **/.terraform/
 *.tfstate
@@ -13,3 +19,12 @@ ignore/
 *.tfstate.backup
 terraform.tfvars
 *.zip
+
+#docs
+docs/
+
+# local dev artifacts
+sample_*.jsonl
+test_*.py
+logs/
+dbt/.user.yml
