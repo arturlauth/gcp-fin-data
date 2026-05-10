@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import date
 
 
 @dataclass
@@ -17,3 +18,5 @@ class OlindaEndpoint:
     odata_filter_param: str | None = None  # field name for OData $filter expression (e.g. "anoMes")
     odata_filter_format: str = "%Y-%m"     # strftime format for the $filter value
     split_filters: list[str] | None = None  # OData $filter expressions to run as separate slices, combined into one blob
+    # When set, loop the function import from this date to api_date (one call per month) into one blob
+    func_range_start: date | None = None

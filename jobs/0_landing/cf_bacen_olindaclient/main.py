@@ -10,6 +10,7 @@ from google.cloud import bigquery, storage
 from clients import olinda
 from config.endpoints import OlindaEndpoint
 from domains.ifdata import ENDPOINTS as IFDATA_ENDPOINTS
+from domains.payments_expectations import ENDPOINTS as PAYMENTS_ENDPOINTS
 from domains.taxa_juros import ENDPOINTS as TAXA_JUROS_ENDPOINTS
 from governance.log import IngestionRecord, write_log
 
@@ -24,6 +25,7 @@ MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "3"))
 ALL_ENDPOINTS: list[OlindaEndpoint] = [
     *TAXA_JUROS_ENDPOINTS,
     *IFDATA_ENDPOINTS,
+    *PAYMENTS_ENDPOINTS,
 ]
 
 

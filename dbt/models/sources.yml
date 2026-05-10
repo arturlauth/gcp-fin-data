@@ -9,3 +9,11 @@ sources:
         description: "Binance trade events — payload as raw JSON, partitioned by _load_date."
       - name: tesouro_leiloes
         description: "Tesouro Nacional auction API — all endpoints multiplexed, endpoint_name as discriminator."
+      - name: bacen_taxa_juros_mensal
+        description: "BACEN taxaJuros — taxas mensais por instituição e modalidade."
+      - name: bacen_ifdata_cadastro
+        description: "BACEN IFDATA — cadastro de instituições financeiras por segmento."
+      - name: bacen_meios_pagamento_mensal
+        description: "BACEN MPV — volumes mensais de Pix, TED, Boleto, DOC, Cheque e TEC."
+      - name: bacen_expectativas_anuais
+        description: "BACEN Focus — expectativas de mercado anuais (IPCA, Câmbio, PIB, Balança comercial, etc.)."

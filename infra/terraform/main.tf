@@ -438,6 +438,8 @@ locals {
     "taxa_juros_mensal",
     "ifdata_lista_relatorio",
     "ifdata_cadastro",
+    "meios_pagamento_mensal",
+    "expectativas_anuais",
   ])
 }
 

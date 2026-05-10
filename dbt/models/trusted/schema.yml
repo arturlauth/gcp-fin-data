@@ -110,6 +110,66 @@ models:
       - name: titulo
         description: "Título do comunicado."
 
+  - name: bacen_meios_pagamento_mensal
+    description: "Volumes mensais de meios de pagamento no Brasil — Pix, TED, Boleto, DOC, Cheque, TEC."
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [data_referencia]
+    columns:
+      - name: data_referencia
+        description: "Primeiro dia do mês de referência (ex: 2026-04-01)."
+        tests: [not_null]
+      - name: qtd_pix
+        description: "Quantidade de transações Pix no mês."
+      - name: val_pix
+        description: "Valor total das transações Pix no mês."
+      - name: qtd_ted
+        description: "Quantidade de transferências TED no mês."
+      - name: val_ted
+        description: "Valor total das transferências TED no mês."
+      - name: qtd_boleto
+        description: "Quantidade de boletos liquidados no mês."
+      - name: val_boleto
+        description: "Valor total dos boletos liquidados no mês."
+      - name: qtd_cheque
+        description: "Quantidade de cheques compensados no mês."
+      - name: val_cheque
+        description: "Valor total dos cheques compensados no mês."
+      - name: qtd_doc
+        description: "Quantidade de transferências DOC no mês."
+      - name: val_doc
+        description: "Valor total das transferências DOC no mês."
+
+  - name: bacen_expectativas_anuais
+    description: "Expectativas de mercado anuais do BACEN Focus — mediana, média e dispersão por indicador e ano de referência."
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [data_coleta, indicador, data_referencia]
+    columns:
+      - name: data_coleta
+        description: "Data de publicação da pesquisa Focus."
+        tests: [not_null]
+      - name: indicador
+        description: "Nome do indicador econômico (ex: IPCA, Câmbio, PIB Total)."
+        tests: [not_null]
+      - name: data_referencia
+        description: "Ano de referência da expectativa (ex: 2026, 2027)."
+        tests: [not_null]
+      - name: mediana
+        description: "Mediana das expectativas dos participantes."
+      - name: media
+        description: "Média das expectativas dos participantes."
+      - name: desvio_padrao
+        description: "Desvio padrão das expectativas."
+      - name: minimo
+        description: "Menor expectativa informada."
+      - name: maximo
+        description: "Maior expectativa informada."
+      - name: num_respondentes
+        description: "Número de instituições respondentes."
+
   - name: tesouro_dealers
     description: "Dealers primários do Tesouro Nacional por período — deduplicated by all columns."
     tests:
