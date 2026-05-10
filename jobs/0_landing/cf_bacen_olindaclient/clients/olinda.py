@@ -158,6 +158,7 @@ def _stream_range_to_gcs(
 
     blob = bucket_obj.blob(blob_path)
     total = 0
+    consecutive_old_500s = 0  # fail fast if service is fully down (not just recent months unpublished)
 
     with blob.open("wt", content_type="application/x-ndjson", encoding="utf-8") as gcs_file:
         for month_date in months:
@@ -171,8 +172,18 @@ def _stream_range_to_gcs(
             skip = 0
             resp = range_session.get(f"{base_url}?$format=json&$top={PAGE_SIZE}&$skip={skip}", timeout=300)
             if resp.status_code == 500:
-                logger.warning("Month not yet published | date=%s | skipping", date_val)
+                days_old = (run_date - month_date).days
+                if days_old > 90:
+                    consecutive_old_500s += 1
+                    if consecutive_old_500s >= 3:
+                        raise requests.HTTPError(
+                            f"Service appears down: {consecutive_old_500s} consecutive 500s for old months",
+                            response=resp,
+                        )
+                else:
+                    logger.warning("Month not yet published | date=%s | skipping", date_val)
                 continue
+            consecutive_old_500s = 0
             resp.raise_for_status()
             page: list[dict] = resp.json().get("value", [])
 
