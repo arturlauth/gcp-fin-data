@@ -1,8 +1,10 @@
-# GCP Financial Data Platform
+# GCP - dbt Fin Data
 
 A portfolio project to practice GCP and dbt, explore available services, and show how a data engineer can transition between stacks. Two parallel pipelines ingest financial data from public sources — one streaming, one batch — into BigQuery for analytical use.
 
-The structure is designed to scale at the organizational level (Terraform infrastructure, Medallion architecture, BigQuery partitioning) and at the data volume level. More modern approaches like a lakehouse architecture with open table formats (Iceberg) and Cloud Composer for orchestration were intentionally skipped to keep costs low.
+The structure is designed to scale at the organizational level (Terraform infrastructure, Medallion architecture, BigQuery partitioning) and at the data volume level.
+
+> More modern approaches like a lakehouse architecture with open table formats (Iceberg) and Cloud Composer for orchestration were intentionally skipped to keep costs low.
 
 > PT-BR version: [README.pt-br.md](README.pt-br.md)
 
@@ -24,6 +26,38 @@ Tesouro REST API ───┘
 | Raw | BigQuery (append-only) | Minimal structure: `payload STRING` + metadata columns |
 | Trusted | BigQuery (dbt incremental MERGE) | Typed, deduplicated, partitioned, with column descriptions |
 | Refined | BigQuery (dbt) | Business-ready models and analytical aggregations |
+
+```
+.
+├── jobs/
+│   ├── 0_landing/
+│   │   ├── vm_binance_btcbrl/         # VM | Binance trades BTC/BRL → GCS
+│   │   └── cf_bacen_olindaclient/     # Cloud Function | BACEN Olinda APIs → GCS
+│   │       ├── main.py
+│   │       ├── clients/               # olinda.py, sgs.py
+│   │       ├── domains/               # credit_rates, ifdata, pix, institutions
+│   │       └── config/                # endpoint definitions
+│   │   └── cf_tesouro_leiloes/        # Cloud Function | Tesouro auction APIs → GCS
+│   ├── 1_raw/
+│   │   ├── cf_binance_btcbrl/         # Cloud Function | GCS → raw.btcbrl_trades
+│   │   ├── cf_bacen_olindaclient/     # Cloud Function | GCS → raw.bacen_*
+│   │   └── cf_tesouro_leiloes/        # Cloud Function | GCS → raw.tesouro_leiloes
+│   ├── 2_trusted/                     # owned by dbt
+│   └── 3_refined/                     # owned by dbt
+├── dbt/
+│   ├── models/
+│   │   ├── trusted/                   # incremental MERGE models
+│   │   └── refined/                   # business-ready aggregations
+│   └── macros/
+├── infra/
+│   └── terraform/
+│       ├── main.tf
+│       ├── variables.tf
+│       └── environments/
+│           ├── dev.tfvars
+│           └── prod.tfvars
+└── CLAUDE.md
+```
 
 ---
 
@@ -94,17 +128,8 @@ All infrastructure is managed via **Terraform** (no manual console clicks).
 
 No workflow orchestrator — each step is an independent, idempotent unit triggered by Cloud Scheduler. Pipeline runs are audited via `governance.ingestion_log` in BigQuery; logs available through Cloud Logging.
 
-| UTC | Step |
-|---|---|
-| Always on | Binance WebSocket → GCS landing |
-| 02:00 | Binance GCS → BigQuery raw |
-| 02:30 | BACEN APIs → GCS landing (daily) |
-| 03:00 | BACEN APIs → GCS landing (monthly) |
-| 03:30 | BACEN APIs → GCS landing (quarterly) |
-| 04:00 | BACEN GCS → BigQuery raw |
-| 05:00 | Tesouro API → GCS landing |
-| 06:00 | Tesouro GCS → BigQuery raw |
-| 07:00 | dbt build — trusted + refined |
+### BigQuery — governance.ingestion_log failure audit
+![ingestion_log failure query](<imgs/Captura de tela 2026-05-11 085919.png>)
 
 ---
 
@@ -124,43 +149,7 @@ No workflow orchestrator — each step is an independent, idempotent unit trigge
 - Landing is immutable and replayable — raw payloads are never modified.
 - Raw layer is append-only — no updates, no deletes.
 - Typing, deduplication and MERGE happen only in trusted (dbt), so the boundary is explicit.
-- Each Cloud Function is a single Python file (or a small package for multi-domain jobs like BACEN). No frameworks, no unnecessary abstraction.
 
----
-
-## Project Structure
-
-```
-.
-├── jobs/
-│   ├── 0_landing/
-│   │   ├── vm_binance_btcbrl/     # Binance WebSocket → GCS (asyncio, systemd)
-│   │   ├── cf_bacen/              # BACEN APIs → GCS (ThreadPoolExecutor, 16 endpoints)
-│   │   │   ├── main.py
-│   │   │   ├── clients/           # olinda.py, sgs.py
-│   │   │   ├── domains/           # institutions, spi, credit_rates, pix, ifdata
-│   │   │   └── config/            # endpoint definitions
-│   │   └── cf_tesouro_leiloes/    # Tesouro API → GCS
-│   ├── 1_raw/
-│   │   ├── cf_binance_btcbrl/     # GCS → raw.btcbrl_trades
-│   │   ├── cf_bacen/              # GCS → raw.bacen_* (16 tables)
-│   │   └── cf_tesouro_leiloes/    # GCS → raw.tesouro_leiloes
-│   ├── 2_trusted/                 # owned by dbt
-│   └── 3_refined/                 # owned by dbt
-├── dbt/
-│   ├── models/
-│   │   ├── trusted/               # incremental MERGE models
-│   │   └── refined/               # business-ready aggregations
-│   └── macros/
-├── infra/
-│   └── terraform/
-│       ├── main.tf
-│       ├── variables.tf
-│       └── environments/
-│           ├── dev.tfvars
-│           └── prod.tfvars
-└── CLAUDE.md
-```
 
 ---
 
@@ -181,14 +170,21 @@ No workflow orchestrator — each step is an independent, idempotent unit trigge
 ### GCS — Hive-partitioned landing files (Binance trades)
 ![GCS landing bucket](<imgs/Captura de tela 2026-05-10 173315.png>)
 
+### GCE — Binance streamer VM running
+![Streamer VM](<imgs/Captura de tela 2026-05-11 085318.png>)
+
+### Cloud Scheduler — all pipeline jobs enabled and running
+![Cloud Scheduler all jobs](<imgs/Captura de tela 2026-05-11 085447.png>)
+
+### GCP Billing — project cost (May 2026)
+![GCP Billing](<imgs/Captura de tela 2026-05-11 085525.png>)
+
 ---
 
-## Status
+## Conclusion & Next Steps
 
-| Area | Status |
-|---|---|
-| Binance landing + raw + trusted | Done |
-| BACEN landing + raw | Done |
-| BACEN trusted (dbt) | Done |
-| Tesouro landing + raw + trusted + refined | Done |
-| BACEN / Binance refined | Not planned |
+The project delivers a functional data platform running in a development environment — pipelines run daily, infrastructure is fully managed by Terraform, and data lands in BigQuery across all medallion layers. The codebase is modular enough to be pushed to production if that were ever the case, but that was never the goal. The goal was to practice the engineering stack (GCP, dbt, Terraform, streaming vs. batch, medallion architecture), and it currently has no analytical value.
+
+Future directions that would change that:
+- Enrich the data lake with additional sources (e.g. CVM, B3, more BACEN endpoints)
+- Use the data to deliver analytical insights or feed an ML model

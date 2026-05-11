@@ -1,8 +1,10 @@
-# GCP Financial Data Platform
+# GCP - dbt Fin Data
 
 Projeto de portfólio para praticar GCP e dbt, explorar os serviços disponíveis e mostrar como um engenheiro de dados pode transitar entre diferentes stacks. Dois pipelines paralelos ingerem dados financeiros de fontes públicas — um streaming, um batch — no BigQuery para uso analítico.
 
-A estrutura é pensada para escalar a nível organizacional (infraestrutura Terraform, arquitetura Medallion, particionamento no BigQuery) e a nível de volume de dados. Abordagens mais modernas como arquitetura lakehouse com formatos abertos de tabela (Iceberg) e Cloud Composer para orquestração foram intencionalmente descartadas para manter os custos baixos.
+A estrutura é pensada para escalar a nível organizacional (infraestrutura Terraform, arquitetura Medallion, particionamento no BigQuery) e a nível de volume de dados.
+
+> Abordagens mais modernas como arquitetura lakehouse com formatos abertos de tabela (Iceberg) e Cloud Composer para orquestração foram intencionalmente descartadas para manter os custos baixos.
 
 > English version: [README.md](README.md)
 
@@ -25,6 +27,38 @@ API REST Tesouro ───┘
 | Trusted | BigQuery (dbt incremental MERGE) | Tipado, deduplicado, particionado, com descrições de colunas |
 | Refined | BigQuery (dbt) | Modelos prontos para análise e agregações de negócio |
 
+```
+.
+├── jobs/
+│   ├── 0_landing/
+│   │   ├── vm_binance_btcbrl/         # VM | Trades Binance BTC/BRL → GCS
+│   │   └── cf_bacen_olindaclient/     # Cloud Function | APIs BACEN Olinda → GCS
+│   │       ├── main.py
+│   │       ├── clients/               # olinda.py, sgs.py
+│   │       ├── domains/               # credit_rates, ifdata, pix, institutions
+│   │       └── config/                # definições de endpoints
+│   │   └── cf_tesouro_leiloes/        # Cloud Function | APIs Tesouro → GCS
+│   ├── 1_raw/
+│   │   ├── cf_binance_btcbrl/         # Cloud Function | GCS → raw.btcbrl_trades
+│   │   ├── cf_bacen_olindaclient/     # Cloud Function | GCS → raw.bacen_*
+│   │   └── cf_tesouro_leiloes/        # Cloud Function | GCS → raw.tesouro_leiloes
+│   ├── 2_trusted/                     # owned by dbt
+│   └── 3_refined/                     # owned by dbt
+├── dbt/
+│   ├── models/
+│   │   ├── trusted/                   # modelos incremental MERGE
+│   │   └── refined/                   # agregações prontas para negócio
+│   └── macros/
+├── infra/
+│   └── terraform/
+│       ├── main.tf
+│       ├── variables.tf
+│       └── environments/
+│           ├── dev.tfvars
+│           └── prod.tfvars
+└── CLAUDE.md
+```
+
 ---
 
 ## Fontes de Dados
@@ -32,7 +66,7 @@ API REST Tesouro ───┘
 | Fonte | Tipo | Conteúdo | Tabelas Raw |
 |---|---|---|---|
 | [Binance](https://binance.com) | Streaming WebSocket | Trades em tempo real BTC/BRL e BTC/USDT | `raw.btcbrl_trades` |
-| [BACEN Dados Abertos](https://dadosabertos.bcb.gov.br) | Batch REST (Olinda) | Taxas de crédito, IFData, meios de pagamento, expectativas de mercado | `raw.bacen_*` (5 tabelas) |
+| [BACEN Dados Abertos](https://dadosabertos.bcb.gov.br) | Batch REST (Olinda) | Taxas de crédito, IFData, meios de pagamento, expectativas de mercado | `raw.bacen_*` (5 tabelas: taxa_juros_mensal, ifdata_cadastro, ifdata_lista_relatorio, meios_pagamento_mensal, expectativas_anuais) |
 | [Tesouro Nacional](https://www.tesourotransparente.gov.br) | Batch REST | Leilões de títulos públicos (LFT, NTN-B, LTN, NTN-F) | `raw.tesouro_leiloes` |
 
 ---
@@ -49,7 +83,7 @@ Uma VM GCE (`e2-micro`) de longa duração conecta ao endpoint de stream combina
 
 ### Batch — BACEN
 
-Uma Cloud Function apoiada por um pacote Python parametrizado para a API REST Olinda. Cobre atualmente **5 endpoints** em 3 domínios (taxas de crédito, IFData e meios de pagamento), rodando em schedules mensais ou trimestrais via `ThreadPoolExecutor`.
+Uma Cloud Function apoiada por um pacote Python parametrizado para a API REST Olinda. Cobre atualmente **5 endpoints** em 3 domínios (taxas de crédito, IFData e expectativas de mercado), rodando em schedules mensais ou trimestrais via `ThreadPoolExecutor`.
 
 Cada execução realiza uma **carga histórica completa** por simplicidade — o landing é transitório:
 
@@ -90,29 +124,12 @@ Toda a infraestrutura é gerenciada via **Terraform** (sem cliques manuais no co
 
 ---
 
-## Orquestração
+## Orquestração & Monitoramento
 
-Sem orquestrador de workflows. Cada etapa é uma unidade independente e idempotente disparada pelo Cloud Scheduler com horários escalonados que garantem buffer suficiente entre as etapas.
+Sem orquestrador de workflows — cada etapa é uma unidade independente e idempotente disparada pelo Cloud Scheduler. As execuções são auditadas via `governance.ingestion_log` no BigQuery; logs disponíveis pelo Cloud Logging.
 
-| UTC | Etapa |
-|---|---|
-| Always on | Binance WebSocket → GCS landing |
-| 02:00 | Binance GCS → BigQuery raw |
-| 02:30 | APIs BACEN → GCS landing (diário) |
-| 03:00 | APIs BACEN → GCS landing (mensal) |
-| 03:30 | APIs BACEN → GCS landing (trimestral) |
-| 04:00 | BACEN GCS → BigQuery raw |
-| 05:00 | API Tesouro → GCS landing |
-| 06:00 | Tesouro GCS → BigQuery raw |
-| 07:00 | dbt build — trusted + refined |
-
----
-
-## Monitoramento
-
-A observabilidade é feita inteiramente via **Cloud Logging**. Cloud Functions e o Cloud Run Job dbt escrevem logs estruturados no stdout (capturado automaticamente pelo GCP). A VM GCE loga via `systemd journal`, também encaminhado ao Cloud Logging.
-
-Nenhum dashboard de monitoramento ou alerta foi configurado — este é um projeto de portfólio e o custo de métricas customizadas no Cloud Monitoring não se justificava.
+### BigQuery — auditoria de falhas no governance.ingestion_log
+![ingestion_log failure query](<imgs/Captura de tela 2026-05-11 085919.png>)
 
 ---
 
@@ -132,43 +149,6 @@ Nenhum dashboard de monitoramento ou alerta foi configurado — este é um proje
 - Landing é imutável e reprocessável — payloads originais nunca são modificados.
 - Raw é append-only — sem updates, sem deletes.
 - Tipagem, deduplicação e MERGE acontecem apenas no trusted (dbt), com fronteira explícita.
-- Cada Cloud Function é um único arquivo Python (ou um pequeno package para jobs multi-domínio como o BACEN). Sem frameworks, sem abstrações desnecessárias.
-
----
-
-## Estrutura do Projeto
-
-```
-.
-├── jobs/
-│   ├── 0_landing/
-│   │   ├── vm_binance_btcbrl/     # Binance WebSocket → GCS (asyncio, systemd)
-│   │   ├── cf_bacen/              # APIs BACEN → GCS (ThreadPoolExecutor, 16 endpoints)
-│   │   │   ├── main.py
-│   │   │   ├── clients/           # olinda.py, sgs.py
-│   │   │   ├── domains/           # institutions, spi, credit_rates, pix, ifdata
-│   │   │   └── config/            # definições de endpoints
-│   │   └── cf_tesouro_leiloes/    # API Tesouro → GCS
-│   ├── 1_raw/
-│   │   ├── cf_binance_btcbrl/     # GCS → raw.btcbrl_trades
-│   │   ├── cf_bacen/              # GCS → raw.bacen_* (16 tabelas)
-│   │   └── cf_tesouro_leiloes/    # GCS → raw.tesouro_leiloes
-│   ├── 2_trusted/                 # owned by dbt
-│   └── 3_refined/                 # owned by dbt
-├── dbt/
-│   ├── models/
-│   │   ├── trusted/               # modelos incremental MERGE
-│   │   └── refined/               # agregações prontas para negócio
-│   └── macros/
-├── infra/
-│   └── terraform/
-│       ├── main.tf
-│       ├── variables.tf
-│       └── environments/
-│           ├── dev.tfvars
-│           └── prod.tfvars
-└── CLAUDE.md
-```
 
 ---
 
@@ -189,14 +169,21 @@ Nenhum dashboard de monitoramento ou alerta foi configurado — este é um proje
 ### GCS — arquivos de landing particionados (trades Binance)
 ![Bucket GCS landing](<imgs/Captura de tela 2026-05-10 173315.png>)
 
+### GCE — VM do streamer Binance em execução
+![Streamer VM](<imgs/Captura de tela 2026-05-11 085318.png>)
+
+### Cloud Scheduler — todos os jobs habilitados e em execução
+![Cloud Scheduler all jobs](<imgs/Captura de tela 2026-05-11 085447.png>)
+
+### GCP Billing — custo do projeto (maio 2026)
+![GCP Billing](<imgs/Captura de tela 2026-05-11 085525.png>)
+
 ---
 
-## Status
+## Conclusão & Próximos Passos
 
-| Área | Status |
-|---|---|
-| Binance landing + raw + trusted | Concluído |
-| BACEN landing + raw | Concluído |
-| BACEN trusted (dbt) | Em andamento |
-| Tesouro landing + raw + trusted + refined | Concluído |
-| BACEN / Binance refined | Não planejado |
+O projeto entrega uma plataforma de dados funcional rodando em ambiente de desenvolvimento — os pipelines executam diariamente, a infraestrutura é totalmente gerenciada pelo Terraform e os dados chegam ao BigQuery em todas as camadas Medallion. O código é modular o suficiente para ser promovido a produção se necessário, mas esse nunca foi o objetivo. O objetivo foi praticar a stack de engenharia (GCP, dbt, Terraform, streaming vs. batch, arquitetura Medallion), e o projeto atualmente não tem valor analítico.
+
+Direções futuras que mudariam isso:
+- Enriquecer o data lake com fontes adicionais (ex: CVM, B3, mais endpoints do BACEN)
+- Usar os dados para entregar insights analíticos ou alimentar um modelo de ML
