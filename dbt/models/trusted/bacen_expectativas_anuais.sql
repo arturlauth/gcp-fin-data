@@ -1,4 +1,8 @@
-{{ config(unique_key=['data_coleta', 'indicador', 'data_referencia']) }}
+{{ config(
+    materialized='incremental',
+    incremental_strategy='merge',
+    unique_key=['data_coleta', 'indicador', 'data_referencia']
+) }}
 
 SELECT
     PARSE_DATE('%Y-%m-%d', JSON_VALUE(payload, '$.Data'))             AS data_coleta,

@@ -1,0 +1,11 @@
+version: 2
+
+models:
+  - name: bacen_ifdata_lista_relatorio
+    description: "Catálogo de relatórios IFDATA disponíveis — referência estática, atualizada trimestralmente."
+    columns:
+      - name: num_relatorio
+        description: "Identificador numérico do relatório IFDATA."
+        tests: [unique, not_null]
+      - name: nome_relatorio
+        description: "Nome descritivo do relatório (ex: Resumo)."

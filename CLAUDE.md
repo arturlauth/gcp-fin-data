@@ -224,15 +224,19 @@ data-streaming-bigquery/
 │   └── 3_refined/                   ← owned by dbt (see dbt/ folder)
 ├── dbt/
 │   ├── models/
-│   │   ├── sources.yml              ✓ raw.btcbrl_trades + raw.tesouro_leiloes
-│   │   ├── trusted/                 ✓ 6 models (binance + 5 tesouro endpoints)
-│   │   │   ├── schema.yml
-│   │   │   ├── binance_btc_trades.sql
-│   │   │   ├── tesouro_benchmarks.sql
-│   │   │   ├── tesouro_calendario.sql
-│   │   │   ├── tesouro_comunicados.sql
-│   │   │   ├── tesouro_dealers.sql
-│   │   │   └── tesouro_resultados.sql
+│   │   ├── sources.yml              ✓ raw.btcbrl_trades · raw.tesouro_leiloes · raw.bacen_* (5 modeled)
+│   │   ├── trusted/                 ✓ 11 models — one .sql + .yml per model
+│   │   │   ├── binance_btc_trades.sql / .yml      #   1 binance
+│   │   │   ├── tesouro_benchmarks.sql / .yml
+│   │   │   ├── tesouro_calendario.sql / .yml
+│   │   │   ├── tesouro_comunicados.sql / .yml
+│   │   │   ├── tesouro_dealers.sql / .yml
+│   │   │   ├── tesouro_resultados.sql / .yml      #   5 tesouro
+│   │   │   ├── bacen_meios_pagamento_mensal.sql / .yml
+│   │   │   ├── bacen_expectativas_anuais.sql / .yml
+│   │   │   ├── bacen_taxa_juros_mensal.sql / .yml
+│   │   │   ├── bacen_ifdata_lista_relatorio.sql / .yml
+│   │   │   └── bacen_ifdata_cadastro.sql / .yml   #   5 bacen
 │   │   └── refined/                 ✓ 3 models (tesouro_leiloes_enriched, tesouro_leiloes_por_titulo, tesouro_leiloes_stress)
 │   ├── macros/
 │   │   └── generate_schema_name.sql ✓ writes to exact BQ dataset (not dbt_dev_trusted)
@@ -268,13 +272,25 @@ data-streaming-bigquery/
 
 **Regra:** Se você precisa adicionar/modificar uma tabela em `trusted` ou `refined`, faça em dbt. Nunca em Terraform.
 
+### Modelos trusted — BACEN (5 modelos)
+
+| Modelo | Fonte raw | Frequência | unique_key |
+|---|---|---|---|
+| `bacen_meios_pagamento_mensal` | `raw.bacen_meios_pagamento_mensal` | monthly | `data_referencia` |
+| `bacen_expectativas_anuais` | `raw.bacen_expectativas_anuais` | daily | `data_coleta, indicador, data_referencia` |
+| `bacen_taxa_juros_mensal` | `raw.bacen_taxa_juros_mensal` | monthly | `data_referencia, modalidade, cnpj8` |
+| `bacen_ifdata_lista_relatorio` | `raw.bacen_ifdata_lista_relatorio` | quarterly | `num_relatorio` |
+| `bacen_ifdata_cadastro` | `raw.bacen_ifdata_cadastro` | quarterly | `cod_inst, data_referencia, td` |
+
 ### Convenções dbt
 
 - `dbt build` em vez de `dbt run && dbt test` — falha por model, não por etapa
 - Todos os modelos trusted são `materialized: incremental`, `incremental_strategy: merge`
+- **Nunca usar `--full-refresh` em `binance_btc_trades`** — é streaming contínuo; recriar a tabela apaga dados históricos irrecuperáveis
 - `var("start_date")` em todos os modelos para reprocessamento pontual
 - Macro `generate_schema_name` obrigatória — garante que dbt escreva em `trusted`/`refined` e não em `dbt_dev_trusted`
 - NULL em chaves do MERGE causa duplicatas no BigQuery — sempre filtrar NULLs nas chaves do `unique_key`
+- QUALIFY `PARTITION BY` deve cobrir exatamente os mesmos campos do `unique_key` — window mais estreita pode descartar rows válidas
 
 ### Deployment (Cloud Build — sem Docker local)
 

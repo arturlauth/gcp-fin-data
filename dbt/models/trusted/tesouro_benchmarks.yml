@@ -1,0 +1,23 @@
+version: 2
+
+models:
+  - name: tesouro_benchmarks
+    description: "Períodos de referência de benchmark por título e vencimento."
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [benchmark, titulo, data_vencimento, data_inicio, data_termino]
+    columns:
+      - name: benchmark
+        description: "Identificação da referência de benchmark (ex: LFT 3 anos)."
+        tests: [not_null]
+      - name: titulo
+        description: "Tipo de título referenciado (ex: LFT)."
+      - name: data_vencimento
+        description: "Data de vencimento do título referenciado."
+        tests: [not_null]
+      - name: data_inicio
+        description: "Data de início do período de referência."
+        tests: [not_null]
+      - name: data_termino
+        description: "Data de término do período de referência."

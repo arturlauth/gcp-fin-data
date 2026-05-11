@@ -90,9 +90,9 @@ All infrastructure is managed via **Terraform** (no manual console clicks).
 
 ---
 
-## Orchestration
+## Orchestration & Monitoring
 
-No workflow orchestrator. Each step is an independent, idempotent unit triggered by Cloud Scheduler with staggered times that provide enough buffer between stages.
+No workflow orchestrator — each step is an independent, idempotent unit triggered by Cloud Scheduler. Pipeline runs are audited via `governance.ingestion_log` in BigQuery; logs available through Cloud Logging.
 
 | UTC | Step |
 |---|---|
@@ -105,14 +105,6 @@ No workflow orchestrator. Each step is an independent, idempotent unit triggered
 | 05:00 | Tesouro API → GCS landing |
 | 06:00 | Tesouro GCS → BigQuery raw |
 | 07:00 | dbt build — trusted + refined |
-
----
-
-## Monitoring
-
-Observability is handled entirely through **Cloud Logging**. Cloud Functions and the dbt Cloud Run Job write structured logs to stdout (captured automatically by GCP). The GCE VM logs via `systemd journal`, also forwarded to Cloud Logging.
-
-No dedicated monitoring dashboard or alerting was configured — this is a portfolio project and the cost of Cloud Monitoring custom metrics was not justified.
 
 ---
 
@@ -197,6 +189,6 @@ No dedicated monitoring dashboard or alerting was configured — this is a portf
 |---|---|
 | Binance landing + raw + trusted | Done |
 | BACEN landing + raw | Done |
-| BACEN trusted (dbt) | In progress |
+| BACEN trusted (dbt) | Done |
 | Tesouro landing + raw + trusted + refined | Done |
 | BACEN / Binance refined | Not planned |

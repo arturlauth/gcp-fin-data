@@ -1,0 +1,43 @@
+version: 2
+
+models:
+  - name: bacen_ifdata_cadastro
+    description: "Cadastro de instituições financeiras por segmento e tipo — BACEN IFDATA, snapshot trimestral."
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [cod_inst, data_referencia, td]
+    columns:
+      - name: cod_inst
+        description: "Código identificador da instituição (CNPJ8-like)."
+        tests: [not_null]
+      - name: data_referencia
+        description: "Primeiro dia do mês de referência do cadastro (ex: 2024-12-01)."
+        tests: [not_null]
+      - name: nome_instituicao
+        description: "Nome da instituição financeira."
+      - name: data_inicio_atividade
+        description: "Primeiro dia do mês de início de atividade da instituição."
+      - name: tcb
+        description: "Tipo de consolidado bancário (ex: B1)."
+      - name: td
+        description: "Tipo de documento de consolidação: I (individual) ou C (conglomerado)."
+        tests: [not_null]
+      - name: tc
+        description: "Código numérico do tipo de consolidado."
+      - name: segmento
+        description: "Segmento prudencial da instituição (ex: Banco Múltiplo)."
+      - name: uf
+        description: "Unidade federativa da sede da instituição."
+      - name: municipio
+        description: "Município da sede da instituição."
+      - name: sr
+        description: "Segmento de porte (S1 a S5). Nullable — algumas instituições não possuem classificação de porte."
+      - name: cod_conglomerado_financeiro
+        description: "Código do conglomerado financeiro ao qual pertence a instituição."
+      - name: cod_conglomerado_prudencial
+        description: "Código do conglomerado prudencial ao qual pertence a instituição."
+      - name: cnpj_instituicao_lider
+        description: "CNPJ8 da instituição líder do conglomerado."
+      - name: situacao
+        description: "Situação operacional da instituição: A (ativa) ou I (inativa)."

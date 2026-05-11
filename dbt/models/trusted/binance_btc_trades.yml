@@ -1,0 +1,12 @@
+version: 2
+
+models:
+  - name: binance_btc_trades
+    description: "Binance BTC/BRL trades — typed, deduplicated by trade_id, partitioned by trade_time."
+    columns:
+      - name: trade_id
+        tests: [unique, not_null]
+      - name: trade_time
+        tests: [not_null]
+      - name: price
+        tests: [not_null]

@@ -1,0 +1,50 @@
+version: 2
+
+models:
+  - name: tesouro_resultados
+    description: "Resultados de leilões do Tesouro Nacional — deduplicated by num_edital."
+    columns:
+      - name: num_edital
+        description: "Número identificador do edital de leilão."
+        tests: [unique, not_null]
+      - name: titulo
+        description: "Tipo de título ofertado (ex: LFT, NTN-B)."
+        tests: [not_null]
+      - name: benchmark
+        description: "Referência de prazo do título ofertado (ex: LFT 3 anos)."
+      - name: tipo_leilao
+        description: "Tipo de oferta (ex: Venda, Compra)."
+      - name: data_vencimento
+        description: "Data de vencimento do título."
+        tests: [not_null]
+      - name: data_leilao
+        description: "Data de realização do leilão."
+        tests: [not_null]
+      - name: data_liquidacao
+        description: "Data de liquidação financeira."
+      - name: data_liquidacao_segunda_volta
+        description: "Data de liquidação da segunda volta."
+      - name: qtd_oferta
+        description: "Quantidade de títulos ofertados."
+      - name: qtd_oferta_segunda_volta
+        description: "Quantidade ofertada na segunda volta."
+      - name: qtd_aceita
+        description: "Quantidade de títulos aceita no leilão."
+      - name: qtd_aceita_segunda_volta
+        description: "Quantidade aceita na segunda volta."
+      - name: qtd_bcb
+        description: "Quantidade aceita pelo Banco Central."
+      - name: pct_taxa_media
+        description: "Taxa de juros média aceita (% a.a.)."
+      - name: pct_taxa_maxima
+        description: "Taxa de juros máxima aceita (% a.a.)."
+      - name: pu_medio
+        description: "Preço unitário médio aceito."
+      - name: pu_minimo
+        description: "Preço unitário mínimo aceito."
+      - name: financeiro_aceito
+        description: "Volume financeiro aceito (R$)."
+      - name: financeiro_aceito_segunda_volta
+        description: "Volume financeiro aceito na segunda volta (R$)."
+      - name: financeiro_bcb
+        description: "Volume financeiro aceito pelo Banco Central (R$)."

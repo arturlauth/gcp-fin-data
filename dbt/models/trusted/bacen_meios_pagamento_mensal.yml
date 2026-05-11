@@ -1,0 +1,33 @@
+version: 2
+
+models:
+  - name: bacen_meios_pagamento_mensal
+    description: "Volumes mensais de meios de pagamento no Brasil — Pix, TED, Boleto, DOC, Cheque, TEC."
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [data_referencia]
+    columns:
+      - name: data_referencia
+        description: "Primeiro dia do mês de referência (ex: 2026-04-01)."
+        tests: [not_null]
+      - name: qtd_pix
+        description: "Quantidade de transações Pix no mês."
+      - name: val_pix
+        description: "Valor total das transações Pix no mês."
+      - name: qtd_ted
+        description: "Quantidade de transferências TED no mês."
+      - name: val_ted
+        description: "Valor total das transferências TED no mês."
+      - name: qtd_boleto
+        description: "Quantidade de boletos liquidados no mês."
+      - name: val_boleto
+        description: "Valor total dos boletos liquidados no mês."
+      - name: qtd_cheque
+        description: "Quantidade de cheques compensados no mês."
+      - name: val_cheque
+        description: "Valor total dos cheques compensados no mês."
+      - name: qtd_doc
+        description: "Quantidade de transferências DOC no mês."
+      - name: val_doc
+        description: "Valor total das transferências DOC no mês."

@@ -1,0 +1,27 @@
+version: 2
+
+models:
+  - name: bacen_taxa_juros_mensal
+    description: "Taxas de juros mensais por modalidade e instituição financeira — BACEN taxaJuros v2."
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [data_referencia, modalidade, cnpj8]
+    columns:
+      - name: data_referencia
+        description: "Primeiro dia do mês de referência da taxa (ex: 2026-03-01)."
+        tests: [not_null]
+      - name: modalidade
+        description: "Modalidade de crédito (ex: Financiamento imobiliário com taxas de mercado - Prefixado)."
+        tests: [not_null]
+      - name: cnpj8
+        description: "8 primeiros dígitos do CNPJ da instituição financeira."
+        tests: [not_null]
+      - name: instituicao_financeira
+        description: "Nome da instituição financeira."
+      - name: posicao
+        description: "Posição do ranking da instituição no período."
+      - name: pct_taxa_juros_mes
+        description: "Taxa de juros ao mês (% a.m.)."
+      - name: pct_taxa_juros_ano
+        description: "Taxa de juros ao ano (% a.a.)."

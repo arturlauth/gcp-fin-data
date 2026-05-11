@@ -1,4 +1,8 @@
-{{ config(unique_key=['data_referencia']) }}
+{{ config(
+    materialized='incremental',
+    incremental_strategy='merge',
+    unique_key=['data_referencia']
+) }}
 
 SELECT
     PARSE_DATE('%Y%m%d', CONCAT(JSON_VALUE(payload, '$.AnoMes'), '01'))  AS data_referencia,

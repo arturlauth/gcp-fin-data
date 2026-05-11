@@ -1,0 +1,11 @@
+version: 2
+
+models:
+  - name: tesouro_comunicados
+    description: "Comunicados oficiais do Tesouro Nacional — deduplicated by link."
+    columns:
+      - name: link
+        description: "URL para download do comunicado."
+        tests: [unique, not_null]
+      - name: titulo
+        description: "Título do comunicado."

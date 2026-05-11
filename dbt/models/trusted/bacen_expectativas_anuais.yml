@@ -1,0 +1,31 @@
+version: 2
+
+models:
+  - name: bacen_expectativas_anuais
+    description: "Expectativas de mercado anuais do BACEN Focus — mediana, média e dispersão por indicador e ano de referência."
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [data_coleta, indicador, data_referencia]
+    columns:
+      - name: data_coleta
+        description: "Data de publicação da pesquisa Focus."
+        tests: [not_null]
+      - name: indicador
+        description: "Nome do indicador econômico (ex: IPCA, Câmbio, PIB Total)."
+        tests: [not_null]
+      - name: data_referencia
+        description: "Ano de referência da expectativa (ex: 2026, 2027)."
+        tests: [not_null]
+      - name: mediana
+        description: "Mediana das expectativas dos participantes."
+      - name: media
+        description: "Média das expectativas dos participantes."
+      - name: desvio_padrao
+        description: "Desvio padrão das expectativas."
+      - name: minimo
+        description: "Menor expectativa informada."
+      - name: maximo
+        description: "Maior expectativa informada."
+      - name: num_respondentes
+        description: "Número de instituições respondentes."

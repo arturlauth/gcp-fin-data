@@ -1,4 +1,8 @@
-{{ config(unique_key='num_edital') }}
+{{ config(
+    materialized='incremental',
+    incremental_strategy='merge',
+    unique_key='num_edital'
+) }}
 
 SELECT
     CAST(JSON_VALUE(payload, '$.numero_edital') AS INT64)          AS num_edital,

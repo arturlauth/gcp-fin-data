@@ -1,4 +1,8 @@
-{{ config(unique_key=['cod_inst', 'data_referencia', 'td', 'sr']) }}
+{{ config(
+    materialized='incremental',
+    incremental_strategy='merge',
+    unique_key=['cod_inst', 'data_referencia', 'td']
+) }}
 
 SELECT
     JSON_VALUE(payload, '$.CodInst')                                           AS cod_inst,
@@ -33,7 +37,6 @@ QUALIFY ROW_NUMBER() OVER (
     PARTITION BY
         JSON_VALUE(payload, '$.CodInst'),
         JSON_VALUE(payload, '$.Data'),
-        JSON_VALUE(payload, '$.Td'),
-        JSON_VALUE(payload, '$.Sr')
+        JSON_VALUE(payload, '$.Td')
     ORDER BY _ingested_at DESC
 ) = 1

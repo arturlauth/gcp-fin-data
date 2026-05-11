@@ -1,4 +1,8 @@
-{{ config(unique_key=['benchmark', 'titulo', 'data_vencimento', 'data_inicio', 'data_termino']) }}
+{{ config(
+    materialized='incremental',
+    incremental_strategy='merge',
+    unique_key=['benchmark', 'titulo', 'data_vencimento', 'data_inicio', 'data_termino']
+) }}
 
 SELECT
     JSON_VALUE(payload, '$.BENCHMARK')                          AS benchmark,
@@ -22,7 +26,9 @@ WHERE endpoint_name = 'benchmarks'
 QUALIFY ROW_NUMBER() OVER (
     PARTITION BY
         JSON_VALUE(payload, '$.BENCHMARK'),
+        JSON_VALUE(payload, '$.TÍTULO'),
         JSON_VALUE(payload, '$.VENCIMENTO'),
-        JSON_VALUE(payload, '$.INÍCIO')
+        JSON_VALUE(payload, '$.INÍCIO'),
+        JSON_VALUE(payload, '$.TERMINO')
     ORDER BY _ingested_at DESC
 ) = 1

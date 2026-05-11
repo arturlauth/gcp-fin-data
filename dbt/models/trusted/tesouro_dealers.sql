@@ -1,4 +1,8 @@
-{{ config(unique_key=['dealer', 'cnpj', 'data_inicio_periodo', 'data_fim_periodo']) }}
+{{ config(
+    materialized='incremental',
+    incremental_strategy='merge',
+    unique_key=['dealer', 'cnpj', 'data_inicio_periodo', 'data_fim_periodo']
+) }}
 
 SELECT
     JSON_VALUE(payload, '$.DEALER')                               AS dealer,
@@ -19,7 +23,9 @@ WHERE endpoint_name = 'dealers'
 {% endif %}
 QUALIFY ROW_NUMBER() OVER (
     PARTITION BY
+        JSON_VALUE(payload, '$.DEALER'),
         JSON_VALUE(payload, '$.CNPJ'),
-        JSON_VALUE(payload, '$.INICIO_PERIODO')
+        JSON_VALUE(payload, '$.INICIO_PERIODO'),
+        JSON_VALUE(payload, '$.FIM_PERIODO')
     ORDER BY _ingested_at DESC
 ) = 1
