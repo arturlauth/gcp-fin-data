@@ -73,6 +73,8 @@ Tesouro REST API ───┘
 
 ## Ingestion Strategy
 
+All batch jobs default to a **d-2 lookback** — they process data for `run_date − 2 days` rather than today. The target date is controlled by a `reference_date` parameter, making any historical day trivially reprocessable by passing a specific date. This provides a built-in safety net for late-arriving data, failed runs, or any incident requiring a clean replay.
+
 ### Streaming — Binance
 
 A long-running GCE VM (`e2-micro`) connects to the Binance WebSocket combined stream endpoint via `asyncio` + `websockets`. Trade events are pushed by Binance and buffered in memory per symbol. The buffer flushes to GCS as a JSONL micro-batch when it reaches **500 messages or 60 seconds**, whichever comes first — avoiding both data loss and excessive small files.

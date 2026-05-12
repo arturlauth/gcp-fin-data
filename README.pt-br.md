@@ -73,6 +73,8 @@ API REST Tesouro ───┘
 
 ## Estratégia de Ingestão
 
+Todos os jobs batch adotam por padrão um **lookback de d-2** — processam dados referentes a `run_date − 2 dias` em vez de hoje. A data alvo é controlada por um parâmetro `reference_date`, tornando qualquer dia histórico trivialmente reprocessável com uma data específica. Isso fornece uma camada de segurança embutida para dados que chegam com atraso, execuções com falha ou qualquer incidente que exija um replay limpo.
+
 ### Streaming — Binance
 
 Uma VM GCE (`e2-micro`) de longa duração conecta ao endpoint de stream combinado da Binance via `asyncio` + `websockets`. Os eventos de trade são enviados pela Binance e bufferizados em memória por símbolo. O buffer é descarregado no GCS como um micro-batch JSONL ao atingir **500 mensagens ou 60 segundos**, o que ocorrer primeiro — evitando perda de dados e excesso de arquivos pequenos.
