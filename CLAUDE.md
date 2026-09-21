@@ -448,3 +448,7 @@ logger.error("Merge failed | target=%s | error=%s", target_table, str(e))
 - **Idempotência** — rodar com os mesmos inputs produz o mesmo resultado (MERGE, não append)
 - **Sem side effects** — toda escrita é decisão explícita do chamador
 - **Parâmetros explícitos** — funções não acessam globais internamente; constantes são lidas no entry point e passadas para baixo
+
+### Documentação viva
+- `CLAUDE.md` e `README.md` (vitrine para avaliadores) devem acompanhar o código. Ao fim de uma sessão que mudou código ou infra, perguntar se ambos precisam ser atualizados. `docs/technical_document.md` foi deletado — não referenciar.
+- Jobs com 2+ clientes de API ou 3+ grupos de domínio viram pacote (`main.py` + `clients/` + `domains/` + `config/`); jobs simples de uma API seguem "um arquivo por serviço".
